@@ -1,0 +1,38 @@
+# Python bytecode and cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# CPython source directories (from workflow cloning)
+cpython-3.13/
+cpython-3.14/
+cpython-3.15/
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+DEBIAN/
+usr/
+
+# Debian packages
+pyv313_3.13_aarch64.deb
+pyv314_3.14_aarch64.deb
+pyv315_3.15_aarch64.deb
+*.deb
+
+# macOS system files
+.DS_Store
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Patch files
+termux.patch
+
+# IDE/editor files
+.vscode/
+.idea/
+.env
