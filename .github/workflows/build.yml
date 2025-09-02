@@ -30,7 +30,8 @@ jobs:
         run: |
           curl -L https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch -o termux.patch
           git apply termux.patch
-          git apply ../as13.patch
+          curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
+          git apply ./as13.patch
 
       - name: Build CPython for Android
         working-directory: ./cpython-3.13/Android
@@ -97,7 +98,8 @@ jobs:
           export CC=clang
           export CXX=clang++
           ls cpython-3.14
-          git apply ../as13.patch
+          curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as14.patch -o as14.patch
+          git apply ./as14.patch
 
       # No patch step for 3.14
 
