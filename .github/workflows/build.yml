@@ -15,7 +15,7 @@ jobs:
   build-android-313:
     name: Android (aarch64) Python 3.13
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CC: clang
       CXX: clang++
@@ -35,6 +35,7 @@ jobs:
       - name: Apply patches
         working-directory: ./cpython-3.13
         run: |
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           curl -L https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch -o termux.patch
           git apply termux.patch
           curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
@@ -43,6 +44,7 @@ jobs:
       - name: Build CPython for Android
         working-directory: ./cpython-3.13/Android
         run: |
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
           ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
 
@@ -87,7 +89,7 @@ jobs:
   build-android-314:
     name: Android (aarch64) Python 3.14
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CC: clang
       CXX: clang++
@@ -107,12 +109,14 @@ jobs:
       - name: Apply patch
         working-directory: ./cpython-3.14
         run: |
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as14.patch -o as14.patch
           git apply ./as14.patch
 
       - name: Build CPython for Android
         working-directory: ./cpython-3.14/Android
         run: |
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
           ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
 
@@ -157,7 +161,7 @@ jobs:
   build-android-315:
     name: Android (aarch64) Python 3.15
     runs-on: macos-14
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CC: clang
       CXX: clang++
@@ -177,6 +181,7 @@ jobs:
       - name: Build CPython for Android
         working-directory: ./cpython-3.15/Android
         run: |
+          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
           ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
 
