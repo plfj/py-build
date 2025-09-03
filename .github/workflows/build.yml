@@ -37,8 +37,7 @@ jobs:
         working-directory: ./cpython-3.13/Android
         run: |
           ./android.py ci aarch64-linux-android
-          ../cross-build/aarch64-linux-android/build/python -V || true
-
+          ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
       - name: Package as .deb
         run: |
           export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
@@ -108,7 +107,7 @@ jobs:
         working-directory: ./cpython-3.14/Android
         run: |
           ./android.py ci aarch64-linux-android
-          ../cross-build/aarch64-linux-android/build/python -V || true
+          ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
 
       - name: Package as .deb
         run: |
@@ -176,7 +175,7 @@ jobs:
         working-directory: ./cpython-3.15/Android
         run: |
           ./android.py ci aarch64-linux-android
-          ../cross-build/aarch64-linux-android/build/python -V || true
+          ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
 
       - name: Package as .deb
         run: |
