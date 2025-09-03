@@ -58,7 +58,7 @@ jobs:
 
           mkdir -p $DEB_DIR/DEBIAN
           mkdir -p $DEB_DIR/usr
-          cat > $DEB_DIR/DEBIAN/control <<EOF
+          cat > $DEB_DIR/DEBIAN/control <<'EOF'
 Package: $PKG_NAME
 Version: $PKG_VERSION
 Architecture: $ARCH
@@ -130,7 +130,7 @@ EOF
 
           mkdir -p $DEB_DIR/DEBIAN
           mkdir -p $DEB_DIR/usr
-          cat > $DEB_DIR/DEBIAN/control <<EOF
+          cat > $DEB_DIR/DEBIAN/control <<'EOF'
 Package: $PKG_NAME
 Version: $PKG_VERSION
 Architecture: $ARCH
@@ -196,7 +196,7 @@ EOF
 
           mkdir -p $DEB_DIR/DEBIAN
           mkdir -p $DEB_DIR/usr
-          cat > $DEB_DIR/DEBIAN/control <<EOF
+          cat > $DEB_DIR/DEBIAN/control <<'EOF'
 Package: $PKG_NAME
 Version: $PKG_VERSION
 Architecture: $ARCH
