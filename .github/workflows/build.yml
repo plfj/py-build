@@ -46,7 +46,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          ../cross-build/aarch64-linux-android/build/python -c "print(__import__('sys').version)" || echo 'Python not found'
+          ls ..
 
       - name: Package as .deb
         run: |
