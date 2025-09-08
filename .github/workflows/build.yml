@@ -46,7 +46,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          python3.13 -c "print(import('sys').version)" || echo 'Python not found'
+          python3.13 -c "print(__import__('sys').version)" || echo 'Python not found'
 
       - name: Package as .deb
         run: |
@@ -118,7 +118,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          python3.14 -c "print(import('sys').version)" || echo 'Python not found'
+          python3.14 -c "print(__import__('sys').version)" || echo 'Python not found'
       - name: Package as .deb
         run: |
           PKG_NAME=pyv314
@@ -182,7 +182,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          python3.15 -c "print(import('sys').version)" || echo 'Python not found'
+          python3.15 -c "print(__import__('sys').version)" || echo 'Python not found'
           
       - name: Package as .deb
         run: |
