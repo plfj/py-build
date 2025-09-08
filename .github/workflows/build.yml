@@ -46,7 +46,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          /Users/runner/work/py-build/py-build/cpython-3.13/cross-build/aarch64-linux-android/prefix/bin/python3.13 -c "print(import('sys').version)" || echo 'Python not found'
+          python3.13 -c "print(import('sys').version)" || echo 'Python not found'
 
       - name: Package as .deb
         run: |
@@ -118,8 +118,7 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          /Users/runner/work/py-build/py-build/cpython-3.14/cross-build/aarch64-linux-android/prefix/bin/python3.14 -c "print(import('sys').version)" || echo 'Python not found'
-
+          python3.14 -c "print(import('sys').version)" || echo 'Python not found'
       - name: Package as .deb
         run: |
           PKG_NAME=pyv314
@@ -183,8 +182,8 @@ jobs:
         run: |
           export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
           ./android.py ci aarch64-linux-android
-          /Users/runner/work/py-build/py-build/cpython-3.15/cross-build/aarch64-linux-android/prefix/bin/python3.15 -c "print(import('sys').version)" || echo 'Python not found'
-
+          python3.15 -c "print(import('sys').version)" || echo 'Python not found'
+          
       - name: Package as .deb
         run: |
           PKG_NAME=pyv315
