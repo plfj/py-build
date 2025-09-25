@@ -106,13 +106,6 @@ jobs:
           git clone --branch 3.14 --depth 1 https://github.com/python/cpython.git cpython-3.14
           ls cpython-3.14
 
-      - name: Apply patch
-        working-directory: ./cpython-3.14
-        run: |
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as14.patch -o as14.patch
-          git apply ./as14.patch
-
       - name: Build CPython for Android
         working-directory: ./cpython-3.14/Android
         run: |
