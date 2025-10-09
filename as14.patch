@@ -1,11 +1,11 @@
+diff --git a/Include/patchlevel.h b/Include/patchlevel.h
+index 342b644..f892b31 100644
 --- a/Include/patchlevel.h
 +++ b/Include/patchlevel.h
-@@ -36,7 +36,7 @@
- #define PY_RELEASE_SERIAL       2
+@@ -25,7 +25,7 @@ #define PY_RELEASE_SERIAL       0
  
  /* Version as a string */
--#define PY_VERSION              "3.14.0rc3+"
-+#define PY_VERSION              "3.14.0rc3"
+-#define PY_VERSION              "3.14.0+"
++#define PY_VERSION              "3.14.0"
  /*--end constants--*/
-
  
