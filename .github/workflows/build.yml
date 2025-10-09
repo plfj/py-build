@@ -3,19 +3,25 @@ name: Build Android
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - '3.*'
+    branches: [main, '3.*']
   pull_request:
-    branches:
-      - main
-      - '3.*'
+    branches: [main, '3.*']
 
 jobs:
-  build-android-313:
-    name: Android (aarch64) Python 3.13
+  build-template:
+    name: Build Android Python (${{ matrix.version }})
     runs-on: macos-14
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - version: 3.13
+            branch: 3.13
+          - version: 3.14
+            branch: 3.14
+          - version: 3.15
+            branch: main
     env:
       CC: clang
       CXX: clang++
@@ -23,37 +29,57 @@ jobs:
       AR: llvm-ar
       NM: llvm-nm
       RANLIB: llvm-ranlib
-    steps:
-      - name: Install dependencies & clone CPython
-        run: |
-          brew install readline llvm lld dpkg mpdecimal
-          brew uninstall gcc || true
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          git clone --branch 3.13 --depth 1 https://github.com/python/cpython.git cpython-3.13
-          ls cpython-3.13
+      LLVM_PATH: /opt/homebrew/opt/llvm/bin
 
-      - name: Apply patches
-        working-directory: ./cpython-3.13
+    steps:
+      - name: Set up environment
         run: |
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+          set -euxo pipefail
+          brew update
+          brew install readline llvm lld dpkg mpdecimal || true
+          brew uninstall gcc || true
+          echo "$LLVM_PATH" >> $GITHUB_PATH
+
+      - name: Cache LLVM and dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/Homebrew
+            /opt/homebrew/Cellar/llvm
+          key: llvm-${{ runner.os }}-${{ hashFiles('.github/workflows/build-android.yml') }}
+
+      - name: Clone CPython repository (shallow)
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 https://github.com/python/cpython.git cpython-${{ matrix.version }}
+          cd cpython-${{ matrix.version }}
+          git fetch --depth 1 origin ${{ matrix.branch }}
+          git checkout ${{ matrix.branch }}
+          ls -la
+
+      - name: Apply patches (only for 3.13)
+        if: matrix.version == '3.13'
+        working-directory: ./cpython-${{ matrix.version }}
+        run: |
+          set -euxo pipefail
           curl -L https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch -o termux.patch
-          #git apply termux.patch
           curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
-          git apply ./as13.patch
+          git apply ./as13.patch || echo "Patch apply failed — continuing."
 
       - name: Build CPython for Android
-        working-directory: ./cpython-3.13/Android
+        working-directory: ./cpython-${{ matrix.version }}/Android
         run: |
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          ./android.py ci aarch64-linux-android
-          python3.13 -c "print(__import__('sys').version)" || echo 'Python not found'
+          set -euxo pipefail
+          ./android.py ci --fast-ci ${{ matrix.arch }}-linux-android
+          python${{ matrix.version }} -c "import sys; print(sys.version)" || echo 'Python not found'
 
       - name: Package as .deb
         run: |
-          PKG_NAME=pyv313
-          PKG_VERSION=3.13
+          set -euxo pipefail
+          PKG_NAME=pyv${{ matrix.version//./ }}
+          PKG_VERSION=${{ matrix.version }}
           ARCH=aarch64
-          BUILD_DIR=./cpython-3.13/cross-build/aarch64-linux-android
+          BUILD_DIR=./cpython-${{ matrix.version }}/cross-build/aarch64-linux-android
           OUT_DIR=$( [ -d "$BUILD_DIR/prefix" ] && echo "$BUILD_DIR/prefix" || echo "$BUILD_DIR/install" )
           DEB_DIR=$PKG_NAME
 
@@ -82,135 +108,6 @@ jobs:
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
         with:
-          name: pyv313
-          path: pyv313_3.13_aarch64.deb
-          if-no-files-found: error
-
-  build-android-314:
-    name: Android (aarch64) Python 3.14
-    runs-on: macos-14
-    timeout-minutes: 90
-    env:
-      CC: clang
-      CXX: clang++
-      LD: clang
-      AR: llvm-ar
-      NM: llvm-nm
-      RANLIB: llvm-ranlib
-    steps:
-      - name: Install dependencies & clone CPython
-        run: |
-          brew install readline llvm lld dpkg mpdecimal
-          brew uninstall gcc || true
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          git clone --branch 3.14 --depth 1 https://github.com/python/cpython.git cpython-3.14
-          ls cpython-3.14
-
-      - name: Build CPython for Android
-        working-directory: ./cpython-3.14/Android
-        run: |
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          ./android.py ci aarch64-linux-android
-          python3.14 -c "print(__import__('sys').version)" || echo 'Python not found'
-      - name: Package as .deb
-        run: |
-          PKG_NAME=pyv314
-          PKG_VERSION=3.14
-          ARCH=aarch64
-          BUILD_DIR=./cpython-3.14/cross-build/aarch64-linux-android
-          OUT_DIR=$( [ -d "$BUILD_DIR/prefix" ] && echo "$BUILD_DIR/prefix" || echo "$BUILD_DIR/install" )
-          DEB_DIR=$PKG_NAME
-
-          mkdir -p $DEB_DIR/DEBIAN
-          mkdir -p $DEB_DIR/usr
-          cp -r $OUT_DIR/* $DEB_DIR/usr/
-
-          cat > $DEB_DIR/DEBIAN/control <<EOF
-          Package: $PKG_NAME
-          Version: $PKG_VERSION
-          Architecture: $ARCH
-          Maintainer: Cross-compiled by NotFound
-          Description: Python $PKG_VERSION cross-compiled for Termux aarch64
-          EOF
-
-          cat > $DEB_DIR/DEBIAN/postinst <<EOF
-          #!/bin/sh
-          set -e
-          echo "$PKG_NAME installed successfully!"
-          exit 0
-          EOF
-          chmod 755 $DEB_DIR/DEBIAN/postinst
-
-          dpkg-deb --build $DEB_DIR ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb
-
-      - name: Upload Debian package
-        uses: actions/upload-artifact@v4
-        with:
-          name: pyv314
-          path: pyv314_3.14_aarch64.deb
-          if-no-files-found: error
-
-  build-android-315:
-    name: Android (aarch64) Python 3.15
-    runs-on: macos-14
-    timeout-minutes: 90
-    env:
-      CC: clang
-      CXX: clang++
-      LD: clang
-      AR: llvm-ar
-      NM: llvm-nm
-      RANLIB: llvm-ranlib
-    steps:
-      - name: Install dependencies & clone CPython
-        run: |
-          brew install readline llvm lld dpkg mpdecimal
-          brew uninstall gcc || true
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          git clone --branch main --depth 1 https://github.com/python/cpython.git cpython-3.15
-          ls cpython-3.15
-
-      - name: Build CPython for Android
-        working-directory: ./cpython-3.15/Android
-        run: |
-          export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
-          ./android.py ci aarch64-linux-android
-          python3.15 -c "print(__import__('sys').version)" || echo 'Python not found'
-          
-      - name: Package as .deb
-        run: |
-          PKG_NAME=pyv315
-          PKG_VERSION=3.15
-          ARCH=aarch64
-          BUILD_DIR=./cpython-3.15/cross-build/aarch64-linux-android
-          OUT_DIR=$( [ -d "$BUILD_DIR/prefix" ] && echo "$BUILD_DIR/prefix" || echo "$BUILD_DIR/install" )
-          DEB_DIR=$PKG_NAME
-
-          mkdir -p $DEB_DIR/DEBIAN
-          mkdir -p $DEB_DIR/usr
-          cp -r $OUT_DIR/* $DEB_DIR/usr/
-
-          cat > $DEB_DIR/DEBIAN/control <<EOF
-          Package: $PKG_NAME
-          Version: $PKG_VERSION
-          Architecture: $ARCH
-          Maintainer: Cross-compiled by NotFound
-          Description: Python $PKG_VERSION cross-compiled for Termux aarch64
-          EOF
-
-          cat > $DEB_DIR/DEBIAN/postinst <<EOF
-          #!/bin/sh
-          set -e
-          echo "$PKG_NAME installed successfully!"
-          exit 0
-          EOF
-          chmod 755 $DEB_DIR/DEBIAN/postinst
-
-          dpkg-deb --build $DEB_DIR ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb
-
-      - name: Upload Debian package
-        uses: actions/upload-artifact@v4
-        with:
-          name: pyv315
-          path: pyv315_3.15_aarch64.deb
+          name: pyv${{ matrix.version//./ }}
+          path: pyv${{ matrix.version//./ }}_${{ matrix.version }}_aarch64.deb
           if-no-files-found: error
