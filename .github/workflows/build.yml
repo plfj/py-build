@@ -22,6 +22,7 @@ jobs:
             branch: 3.14
           - version: 3.15
             branch: main
+
     env:
       CC: clang
       CXX: clang++
@@ -30,8 +31,12 @@ jobs:
       NM: llvm-nm
       RANLIB: llvm-ranlib
       LLVM_PATH: /opt/homebrew/opt/llvm/bin
+      ARCH: aarch64
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Set up environment
         run: |
           set -euxo pipefail
@@ -39,6 +44,7 @@ jobs:
           brew install readline llvm lld dpkg mpdecimal || true
           brew uninstall gcc || true
           echo "$LLVM_PATH" >> $GITHUB_PATH
+          export PATH="$LLVM_PATH:$PATH"
 
       - name: Cache LLVM and dependencies
         uses: actions/cache@v4
@@ -48,14 +54,14 @@ jobs:
             /opt/homebrew/Cellar/llvm
           key: llvm-${{ runner.os }}-${{ hashFiles('.github/workflows/build-android.yml') }}
 
-      - name: Clone CPython repository (shallow)
-        run: |
-          set -euxo pipefail
-          git clone --depth 1 https://github.com/python/cpython.git cpython-${{ matrix.version }}
-          cd cpython-${{ matrix.version }}
-          git fetch --depth 1 origin ${{ matrix.branch }}
-          git checkout ${{ matrix.branch }}
-          ls -la
+      - name: Checkout CPython repository
+        uses: actions/checkout@v5
+        with:
+          repository: python/cpython
+          ref: ${{ matrix.branch }}
+          path: cpython-${{ matrix.version }}
+          fetch-depth: 1
+
 
       - name: Apply patches (only for 3.13)
         if: matrix.version == '3.13'
@@ -64,30 +70,32 @@ jobs:
           set -euxo pipefail
           curl -L https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch -o termux.patch
           curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
-          git apply ./as13.patch || echo "Patch apply failed — continuing."
+          git apply ./as13.patch || echo "⚠️ Patch apply failed — continuing."
 
       - name: Build CPython for Android
         working-directory: ./cpython-${{ matrix.version }}/Android
         run: |
           set -euxo pipefail
-          ./android.py ci --fast-ci ${{ matrix.arch }}-linux-android
-          python${{ matrix.version }} -c "import sys; print(sys.version)" || echo 'Python not found'
+          ./android.py ci --fast-ci aarch64-linux-android
+          echo "✅ Build finished for version ${{ matrix.version }}"
+          ls -lh ../cross-build/aarch64-linux-android || echo "⚠️ Build output not found"
 
       - name: Package as .deb
         run: |
           set -euxo pipefail
-          PKG_NAME=pyv${{ matrix.version//./ }}
-          PKG_VERSION=${{ matrix.version }}
-          ARCH=aarch64
-          BUILD_DIR=./cpython-${{ matrix.version }}/cross-build/aarch64-linux-android
+          VERSION="${{ matrix.version }}"
+          PKG_NAME="pyv${VERSION//./}"
+          PKG_VERSION="$VERSION"
+          ARCH="aarch64"
+          BUILD_DIR="./cpython-${VERSION}/cross-build/${ARCH}-linux-android"
           OUT_DIR=$( [ -d "$BUILD_DIR/prefix" ] && echo "$BUILD_DIR/prefix" || echo "$BUILD_DIR/install" )
-          DEB_DIR=$PKG_NAME
+          DEB_DIR="$PKG_NAME"
 
-          mkdir -p $DEB_DIR/DEBIAN
-          mkdir -p $DEB_DIR/usr
-          cp -r $OUT_DIR/* $DEB_DIR/usr/
+          mkdir -p "$DEB_DIR/DEBIAN"
+          mkdir -p "$DEB_DIR/usr"
+          cp -r "$OUT_DIR"/* "$DEB_DIR/usr/"
 
-          cat > $DEB_DIR/DEBIAN/control <<EOF
+          cat > "$DEB_DIR/DEBIAN/control" <<EOF
           Package: $PKG_NAME
           Version: $PKG_VERSION
           Architecture: $ARCH
@@ -95,19 +103,19 @@ jobs:
           Description: Python $PKG_VERSION cross-compiled for Termux aarch64
           EOF
 
-          cat > $DEB_DIR/DEBIAN/postinst <<EOF
+          cat > "$DEB_DIR/DEBIAN/postinst" <<EOF
           #!/bin/sh
           set -e
           echo "$PKG_NAME installed successfully!"
           exit 0
           EOF
-          chmod 755 $DEB_DIR/DEBIAN/postinst
+          chmod 755 "$DEB_DIR/DEBIAN/postinst"
 
-          dpkg-deb --build $DEB_DIR ${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb
+          dpkg-deb --build "$DEB_DIR" "${PKG_NAME}_${PKG_VERSION}_${ARCH}.deb"
 
       - name: Upload Debian package
         uses: actions/upload-artifact@v4
         with:
-          name: pyv${{ replace(matrix.version, '.', '') }}
-          path: pyv${{ replace(matrix.version, '.', '') }}_${{ matrix.version }}_aarch64.deb
+          name: pyv${{ matrix.version }}
+          path: pyv*_${{ matrix.version }}_aarch64.deb
           if-no-files-found: error
