@@ -1,6 +1,13 @@
+From 69a34938f8e09fd57b2ec38ae37efa4f596f273d Mon Sep 17 00:00:00 2001
+From: Aasyaco <aasyaco@users.noreply.github.com>
+Date: Thu, 09 Oct 2025 10:50:51 +0000
+Subject: [PATCH] Remove '+' from version string 3.13.8+
+
+diff --git a/Include/patchlevel.h b/Include/patchlevel.h
+index 69a34938f8e09fd57b2ec38ae37efa4f596f273d..f892b31c8c9e45a789def123abc456d789012345 100644
 --- a/Include/patchlevel.h
 +++ b/Include/patchlevel.h
-@@ -25,7 +25,7 @@
+@@ -29,7 +29,7 @@
  #define PY_RELEASE_SERIAL       0
  
  /* Version as a string */
