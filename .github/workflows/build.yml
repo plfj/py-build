@@ -62,16 +62,21 @@ jobs:
           path: cpython-${{ matrix.version }}
           fetch-depth: 1
 
-
-      - name: Apply patches (only for 3.13)
-        if: matrix.version == '3.13'
+      - name: Apply patches (for 3.13 and 3.14)
+        if: matrix.version == '3.13' || matrix.version == '3.14'
         working-directory: ./cpython-${{ matrix.version }}
         run: |
           set -euxo pipefail
           curl -L https://raw.githubusercontent.com/yubrajbhoi/termux-python/refs/heads/main/termux.patch -o termux.patch
-          curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
-          git apply ./as13.patch || echo "⚠️ Patch apply failed — continuing."
 
+          if [ "${{ matrix.version }}" = "3.13" ]; then
+            curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as13.patch -o as13.patch
+            git apply ./as13.patch || echo "⚠️ Patch apply failed — continuing."
+          elif [ "${{ matrix.version }}" = "3.14" ]; then
+            curl -L https://raw.githubusercontent.com/plfj/py-build/refs/heads/main/as14.patch -o as14.patch
+            git apply ./as14.patch || echo "⚠️ Patch apply failed — continuing."
+          fi
+    
       - name: Build CPython for Android
         working-directory: ./cpython-${{ matrix.version }}/Android
         run: |
