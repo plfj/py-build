@@ -1,11 +1,29 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/" # Root of your repository where .github/workflows lives
+    directory: "/"
     schedule:
-      interval: "daily"
+      interval: daily
+      time: "05:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 15
+    pull-request-branch-name:
+      separator: "-"
+    commit-message:
+      prefix: "actions"
+      prefix-development: "chore(actions)"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    groups:
+      all-actions:
+        patterns:
+          - "*"
+    reviewers:
+      - "team:infrastructure"
+    assignees:
+      - "senior-dev"
+    rebasing-strategy: "auto"
+    allow:
+      - dependency-type: "production"
