@@ -1,23 +1,29 @@
-version:2
+version: 2
 updates:
-- package-ecosystem:github-actions
-  directory:/
-  schedule:
-    interval:daily
-    time:"05:00"
-    timezone:America/New_York
-  open-pull-requests-limit:15
-  pull-request-branch-name:
-    separator:"-"
-  commit-message:
-    prefix:actions
-    prefix-development:chore(actions)
-    include:scope
-  labels:[dependencies,github-actions,automated]
-  reviewers:[team:infrastructure]
-  assignees:[senior-dev]
-  rebasing-strategy:auto
-  groups:
-    all:
-      patterns:["*"]
-      
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+      time: "05:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 15
+    pull-request-branch-name:
+      separator: "-"
+    commit-message:
+      prefix: actions
+      prefix-development: chore(actions)
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
+      - automated
+    reviewers:
+      - team:infrastructure
+    assignees:
+      - senior-dev
+    rebasing-strategy: auto
+    groups:
+      all:
+        patterns:
+          - "*"
+          
