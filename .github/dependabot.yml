@@ -21,7 +21,6 @@ updates:
       - team:infrastructure
     assignees:
       - senior-dev
-    rebasing-strategy: auto
     groups:
       all:
         patterns:
