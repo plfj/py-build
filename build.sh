@@ -616,7 +616,12 @@ termux_step_pre_configure() {
     ./configure \
       --host=aarch64-linux-android \
       --build=x86_64-apple-darwin \
-      --without-ensurepip
+      --with-build-python=python3 \
+      --without-ensurepip \
+      --enable-shared \
+      --disable-ipv6 \
+      ac_cv_file__dev_ptmx=yes \
+      ac_cv_file__dev_ptc=no
     make regen-all
     make regen-configure
     if command -v autoreconf &>/dev/null; then
