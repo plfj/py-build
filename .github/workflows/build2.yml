@@ -24,7 +24,10 @@ jobs:
 
       - name: Install dependencies
         run: |
-          brew install wget curl git unzip make pkg-config autoconf automake libtool m4 coreutils gawk xz openssl sqlite readline zlib libffi
+          brew update
+          brew upgrade
+          brew install autoconf@2.71
+          brew install wget curl git unzip make pkg-config automake libtool m4 coreutils gawk xz openssl sqlite readline zlib libffi
           echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH || true
           xcode-select --install || echo "Xcode CLI tools already installed"
 
