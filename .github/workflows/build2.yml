@@ -113,6 +113,7 @@ jobs:
       - name: Build Python
         run: |
           export PREFIX="$PREFIX"
+          autoconf --version
           ./build.sh
 
       - name: Show result
