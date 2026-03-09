@@ -31,6 +31,7 @@ jobs:
 
       - name: Install Autoconf 2.71
         run: |
+          which autoconf
           curl -O https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz
           tar xf autoconf-2.71.tar.gz
           cd autoconf-2.71
