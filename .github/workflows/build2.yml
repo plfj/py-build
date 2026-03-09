@@ -91,7 +91,7 @@ jobs:
           fi
 
           echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
-          ls $TOOLCHAIN/bin/clang
+          ls $TOOLCHAIN/bin
 
           if [ -x "$TOOLCHAIN/bin/clang" ]; then
             echo "CC=$TOOLCHAIN/bin/clang" >> $GITHUB_ENV
