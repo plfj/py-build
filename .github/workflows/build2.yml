@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ master ]
-    
 
 jobs:
   build:
@@ -31,6 +30,16 @@ jobs:
           echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH || true
           xcode-select --install || echo "Xcode CLI tools already installed"
 
+      - name: Install Autoconf 2.71
+        run: |
+          curl -O https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz
+          tar xf autoconf-2.71.tar.gz
+          cd autoconf-2.71
+          ./configure --prefix=$HOME/.local
+          make -j$(sysctl -n hw.logicalcpu)
+          make install
+          export PATH="$HOME/.local/bin:$PATH"
+          autoconf --version
       - name: Download Android command line tools
         run: |
           set -euxo pipefail
