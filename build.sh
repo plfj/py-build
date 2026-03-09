@@ -599,7 +599,7 @@ termux_step_pre_configure() {
         local fullver="${TERMUX_PKG_VERSION}-${TERMUX_PKG_REVISION}"
         local count=0
         while IFS= read -r -d '' file; do
-            sed -i \
+            sed -i.bak \
                 -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
                 -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
                 "$file"
