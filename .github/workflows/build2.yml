@@ -93,9 +93,9 @@ jobs:
           echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
           ls $TOOLCHAIN/bin
 
-          if [ -x "$TOOLCHAIN/bin/clang" ]; then
-            echo "CC=$TOOLCHAIN/bin/clang" >> $GITHUB_ENV
-            echo "CXX=$TOOLCHAIN/bin/clang++" >> $GITHUB_ENV
+          if [ -x "$TOOLCHAIN/bin/aarch64-linux-android35-clang" ]; then
+            echo "CC=$TOOLCHAIN/bin/aarch64-linux-android35-clang" >> $GITHUB_ENV
+            echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android35-clang++" >> $GITHUB_ENV
           else
             echo "CC=$(command -v clang)" >> $GITHUB_ENV
             echo "CXX=$(command -v clang++)" >> $GITHUB_ENV
