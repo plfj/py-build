@@ -613,7 +613,10 @@ termux_step_pre_configure() {
     # -- §14.8  Regenerate autotools configure -----------------------------
     # Must run after patches have been applied to configure.ac.
     cd "$TERMUX_PKG_SRCDIR"
-    ./configure
+    ./configure \
+      --host=aarch64-linux-android \
+      --build=x86_64-apple-darwin \
+      --without-ensurepip
     make regen-all
     make regen-configure
     if command -v autoreconf &>/dev/null; then
