@@ -615,7 +615,7 @@ termux_step_pre_configure() {
     cd "$TERMUX_PKG_SRCDIR"
     if command -v autoreconf &>/dev/null; then
         _info "Running autoreconf -fi ..."
-        autoreconf -fi
+        autoreconf -fiv
         _ok "autoreconf complete."
     else
         _warn "autoreconf not found — skipping regeneration."
