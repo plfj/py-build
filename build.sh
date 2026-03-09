@@ -613,8 +613,11 @@ termux_step_pre_configure() {
     # -- §14.8  Regenerate autotools configure -----------------------------
     # Must run after patches have been applied to configure.ac.
     cd "$TERMUX_PKG_SRCDIR"
+    ./configure
+    make regen-all
+    make regen-configure
     if command -v autoreconf &>/dev/null; then
-        _info "Running autoreconf -fi ..."
+        _info "Running autoreconf -ivf -Werror ..."
         autoreconf -ivf -Werror
         _ok "autoreconf complete."
     else
