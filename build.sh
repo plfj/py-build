@@ -616,7 +616,7 @@ termux_step_pre_configure() {
     ./configure \
       --host=aarch64-linux-android \
       --build=x86_64-apple-darwin \
-      --with-build-python=python3 \
+      --with-build-python=$(which python3.13) \
       --without-ensurepip \
       --enable-shared \
       --disable-ipv6 \
