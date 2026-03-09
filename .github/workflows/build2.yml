@@ -26,6 +26,10 @@ jobs:
           brew update
           brew upgrade
           brew install wget curl git unzip make pkg-config automake libtool m4 coreutils gawk xz openssl sqlite readline zlib libffi
+          brew install automake libtool m4
+          export PATH="/opt/homebrew/opt/automake/bin:$PATH"
+          export PATH="/opt/homebrew/opt/libtool/bin:$PATH"
+          export PATH="/opt/homebrew/opt/m4/bin:$PATH"
           echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH || true
           xcode-select --install || echo "Xcode CLI tools already installed"
 
