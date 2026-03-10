@@ -56,10 +56,8 @@ jobs:
       - name: Install Autoconf 2.71
         run: |
           set -euo pipefail
-          # Use -fsSL for silent, follow-redirect, fail-on-error download
           curl -fsSL https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz \
             -o autoconf-2.71.tar.gz
-          # Sanity-check before extracting
           file autoconf-2.71.tar.gz | grep -q "gzip compressed" || \
             { echo "❌ autoconf tarball looks corrupt"; exit 1; }
           tar xf autoconf-2.71.tar.gz
@@ -67,10 +65,33 @@ jobs:
           ./configure --prefix="$HOME/.local"
           make -j"$(sysctl -n hw.logicalcpu)"
           make install
+
+          # Put our autoconf FIRST so it always shadows /usr/bin/autoconf (2.69).
+          # GITHUB_PATH prepends, so this must come after any other path additions.
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
+          # AUTOCONF_DATADIR: tells autoconf where its own M4 macro library lives.
+          # Without this, autoconf searches its compiled-in default path which does
+          # not exist at $HOME/.local — causing "possibly undefined macro" errors
+          # for standard macros like AC_MSG_ERROR, AC_DEFINE, AS_CASE during
+          # autoreconf on CPython's configure.ac.
+          echo "AUTOCONF_DATADIR=$HOME/.local/share/autoconf" >> "$GITHUB_ENV"
+
+          # ACLOCAL_PATH: where aclocal looks for .m4 files. Ensures autoreconf's
+          # internal aclocal invocation finds the 2.71 macros before system ones.
+          echo "ACLOCAL_PATH=$HOME/.local/share/aclocal:/opt/homebrew/share/aclocal" >> "$GITHUB_ENV"
+
+          # M4PATH: GNU m4 macro search path consumed by autoconf internally.
+          echo "M4PATH=$HOME/.local/share/autoconf" >> "$GITHUB_ENV"
+
       - name: Verify Autoconf version
-        run: autoconf --version | head -1
+        run: |
+          set -euo pipefail
+          autoconf --version | head -1
+          autoreconf --version | head -1
+          # Confirm the correct binary is on PATH (must be $HOME/.local/bin, not /usr/bin)
+          which autoconf
+          which autoreconf
 
       # ── Android SDK + NDK ────────────────────────────────────────────────────
       - name: Set up Android SDK
