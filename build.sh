@@ -284,9 +284,6 @@ _check_tools() {
     local -a required=(make patch tar pkg-config)
     local missing=0
 
-    command -v autoreconf &>/dev/null || \
-        _warn "autoreconf not found; configure regeneration will be skipped."
-
     if ! command -v clang &>/dev/null && ! command -v gcc &>/dev/null; then
         required+=(clang)
     fi
@@ -541,31 +538,18 @@ termux_step_pre_configure() {
         _warn "debpython directory not found — skipping placeholder substitution."
     fi
 
-    # -- §14.9  Regenerate autotools configure ------------------------------
-    # Runs autoreconf to regenerate configure after patches may have modified
-    # configure.ac. Must happen AFTER all patches have been applied.
-    #
-    # FIX: removed the erroneous pre-configure block that was here previously:
-    #   - ./configure was called with hardcoded --host=aarch64-linux-android and
-    #     --build=x86_64-apple-darwin (wrong on any non-Apple or non-aarch64 host)
-    #   - `which python3.13` was hardcoded instead of using $_BUILD_PYTHON
-    #   - make regen-all and make regen-configure were called BEFORE
-    #     _do_configure, meaning the Makefile didn't exist yet — both targets
-    #     are only available after a successful ./configure run.
-    # These calls have been removed entirely. autoreconf -fi regenerates
-    # configure from configure.ac, which is what is actually needed here.
-    #
-    # FIX: removed -Werror from autoreconf — it promotes informational autoconf
-    # warnings to hard errors, breaking on virtually all real configure.ac files.
-    cd "$TERMUX_PKG_SRCDIR"
-    if command -v autoreconf &>/dev/null; then
-        _info "Running autoreconf -fi ..."
-        autoreconf -fi
-        _ok "autoreconf complete."
-    else
-        _warn "autoreconf not found — skipping regeneration."
-        _warn "If ./configure fails, install autoconf and automake."
-    fi
+    # -- §14.9  No autoreconf needed ----------------------------------------
+    # CPython ships a fully pre-generated configure script in its source
+    # tarball. The Termux patches modify C source files, Makefile templates,
+    # and Python modules — NOT configure.ac — so there is nothing to regenerate.
+    # Running autoreconf -fi on CPython's configure.ac requires the exact
+    # autoconf/automake/aclocal versions used by the CPython release engineers
+    # (specific m4 macro sets, libtool stubs, etc.). Any other version produces
+    # "possibly undefined macro" errors for standard macros like AC_MSG_ERROR,
+    # AC_DEFINE, and AS_CASE that are pulled in via CPython's own m4/ includes.
+    # The pre-generated ./configure in the tarball is correct and complete —
+    # just use it directly.
+    _info "Skipping autoreconf — using pre-generated configure from tarball."
 }
 
 # =============================================================================

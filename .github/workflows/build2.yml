@@ -52,29 +52,8 @@ jobs:
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
-      # ── Autoconf (Homebrew) ──────────────────────────────────────────────────
-      # Homebrew's autoconf (currently 2.72) is used instead of building from
-      # source. Building from source into $HOME/.local causes autoreconf to fail
-      # with "possibly undefined macro" errors because the binary's macro data
-      # directory is compiled-in at build time as an absolute path — exporting
-      # AUTOCONF_DATADIR or M4PATH cannot override a compiled-in path.
-      # Homebrew installs to /opt/homebrew with all paths correctly wired.
-      # autoconf is keg-only so its bin dir must be added to PATH explicitly.
-      - name: Install Autoconf
-        run: |
-          set -euo pipefail
-          brew install --quiet autoconf
-          AC_BIN="$(brew --prefix autoconf)/bin"
-          echo "$AC_BIN" >> "$GITHUB_PATH"
-          echo "✅ autoconf installed: $AC_BIN"
-
-      - name: Verify Autoconf version
-        run: |
-          set -euo pipefail
-          autoconf --version | head -1
-          autoreconf --version | head -1
-          which autoconf
-          which autoreconf
+      # autoconf is NOT needed — CPython's configure script is pre-generated
+      # in the source tarball. The Termux patches do not touch configure.ac.
       # ── Android SDK + NDK ────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
