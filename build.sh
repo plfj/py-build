@@ -581,9 +581,36 @@ termux_step_pre_configure() {
              "Set AUTOCONF env var to the full path of the 2.71 binary."
     fi
     _info "Running autoreconf -fi (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
-    # Pass AUTOCONF explicitly so autoreconf's internal invocations also use 2.71.
-    AUTOCONF="$_autoconf_bin" AUTOHEADER="${AUTOHEADER:-autoheader}" \
-    AUTOM4TE="${AUTOM4TE:-autom4te}"  "$_autoreconf_bin" -fi
+    _info "First 30 lines of configure.ac after patching:"
+    head -30 configure.ac >&2
+
+    # Derive the prefix from the autoconf binary path (strip /bin/autoconf).
+    local _ac_prefix="${_autoconf_bin%/bin/autoconf}"
+    local _ac_datadir="${AUTOCONF_DATADIR:-${_ac_prefix}/share/autoconf}"
+    local _aclocal_dir="${_ac_prefix}/share/aclocal"
+
+    _info "AUTOCONF_DATADIR=${_ac_datadir}"
+
+    # Set every variable autoreconf/autoconf/autom4te uses to locate macros.
+    # M4PATH        – GNU m4 macro include path
+    # AUTOCONF_DATADIR – overrides the compiled-in share/autoconf path
+    # ACLOCAL_PATH  – where aclocal searches for .m4 files
+    # All tools are pinned to the same prefix via explicit env vars so no
+    # subprocess can accidentally resolve a different version from PATH.
+    # -I m4 is REQUIRED: CPython keeps its own autoconf macros in the m4/
+    # subdirectory of the source tree (e.g. ax_check_openssl.m4, python.m4).
+    # Without -I m4, autoreconf does not include that directory in the macro
+    # search path and autoconf fails with "possibly undefined macro" for
+    # AC_MSG_ERROR, AC_DEFINE, AS_CASE — even though those are standard macros.
+    # The reason is that CPython's m4/ contains an m4_include or AC_DEFUN that
+    # must be processed before the standard library macros are fully resolved.
+    M4PATH="${_ac_datadir}:${_aclocal_dir}" \
+    AUTOCONF_DATADIR="${_ac_datadir}" \
+    ACLOCAL_PATH="${_aclocal_dir}:/opt/homebrew/share/aclocal" \
+    AUTOCONF="${_autoconf_bin}" \
+    AUTOHEADER="${AUTOHEADER:-${_ac_prefix}/bin/autoheader}" \
+    AUTOM4TE="${AUTOM4TE:-${_ac_prefix}/bin/autom4te}" \
+        "$_autoreconf_bin" -fi -I m4
     _ok "autoreconf complete."
 }
 
