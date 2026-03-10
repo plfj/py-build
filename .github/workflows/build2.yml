@@ -52,8 +52,45 @@ jobs:
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
-      # autoconf is NOT needed — CPython's configure script is pre-generated
-      # in the source tarball. The Termux patches do not touch configure.ac.
+      # ── Autoconf 2.71 ────────────────────────────────────────────────────────
+      # CPython 3.13's configure.ac has AC_PREREQ([2.71]) — exactly 2.71 is
+      # required. The patches modify configure.ac so autoreconf must be run.
+      #
+      # Must be built from source: Homebrew only ships 2.72 which is rejected
+      # by AC_PREREQ([2.71]) — autoconf treats the prereq as a minimum AND
+      # an exact minor-version gate for some internal macro sets.
+      #
+      # Key fix vs previous attempts: configure with --prefix=/usr/local so
+      # the compiled-in data directory path (/usr/local/share/autoconf) exists
+      # and is found correctly. Building to $HOME/.local baked in a path that
+      # didn't match the runner's home dir, causing "possibly undefined macro"
+      # for AC_MSG_ERROR / AC_DEFINE / AS_CASE.
+      - name: Install Autoconf 2.71
+        run: |
+          set -euo pipefail
+          curl -fsSL https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz \
+            -o autoconf-2.71.tar.gz
+          file autoconf-2.71.tar.gz | grep -q "gzip compressed" || \
+            { echo "❌ autoconf tarball looks corrupt"; exit 1; }
+          tar xf autoconf-2.71.tar.gz
+          cd autoconf-2.71
+          # Use /usr/local so the compiled-in share/autoconf data path exists.
+          # The runner has write access to /usr/local on macos-14.
+          ./configure --prefix=/usr/local
+          make -j"$(sysctl -n hw.logicalcpu)"
+          sudo make install
+          # /usr/local/bin is already on PATH on macOS runners — no GITHUB_PATH needed.
+          autoconf --version | head -1
+          autoreconf --version | head -1
+
+      - name: Verify Autoconf 2.71
+        run: |
+          set -euo pipefail
+          ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
+          [[ "$ver" == "2.71" ]] || { echo "❌ Expected autoconf 2.71, got $ver"; exit 1; }
+          echo "✅ autoconf $ver confirmed"
+          which autoconf
+          which autoreconf
       # ── Android SDK + NDK ────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -130,6 +167,11 @@ jobs:
             echo "LDFLAGS=--sysroot=$SYSROOT -fuse-ld=lld"
             # Expose the full triple for build.sh / configure --host=
             echo "ANDROID_BUILD_TARGET=$TARGET"
+            # TERMUX_STANDALONE_TOOLCHAIN: used by build.sh to derive sysroot
+            # include/lib paths. Must point to the NDK toolchain, NOT to PREFIX.
+            # build.sh defaults this to TERMUX_PREFIX which is the output dir —
+            # completely wrong for a cross-compile; the NDK toolchain is correct.
+            echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
           } >> "$GITHUB_ENV"
 
           echo "✅ NDK cross-compilation environment ready"

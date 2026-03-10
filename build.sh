@@ -294,6 +294,12 @@ _check_tools() {
         required+=(sha256sum)
     fi
 
+    # autoreconf 2.71 is required — patches modify configure.ac.
+    if ! command -v autoreconf &>/dev/null; then
+        _error "Required tool not found: autoreconf (install autoconf 2.71)"
+        (( missing++ )) || true
+    fi
+
     for tool in "${required[@]}"; do
         if ! command -v "$tool" &>/dev/null; then
             _error "Required tool not found: $tool"
@@ -414,14 +420,27 @@ termux_step_pre_configure() {
     [[ "$CFLAGS" =~ -O[0-9s] ]] || CFLAGS+=" -O3"
     CFLAGS+=" -fno-semantic-interposition"
 
-    CPPFLAGS="${CPPFLAGS:-}"
-    CPPFLAGS+=" -I${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/include"
-
     # -- §14.3  Linker flags ------------------------------------------------
     LDFLAGS="${LDFLAGS:-}"
     LDFLAGS="${LDFLAGS//-Wl,--as-needed/}"
-    LDFLAGS+=" -L${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/lib"
-    [[ "$TERMUX_ARCH" == "x86_64" ]] && LDFLAGS+="64"
+
+    # Sysroot include/lib paths — only append when TERMUX_STANDALONE_TOOLCHAIN
+    # actually points to an NDK toolchain (contains a sysroot/ subdirectory).
+    # When running under the CI workflow, TERMUX_STANDALONE_TOOLCHAIN is exported
+    # as the NDK toolchain path and --sysroot is already present in CFLAGS/LDFLAGS
+    # from the workflow. When running on-device, TERMUX_STANDALONE_TOOLCHAIN
+    # defaults to TERMUX_PREFIX which has no sysroot/ subdir, so skip it.
+    CPPFLAGS="${CPPFLAGS:-}"
+    local _sysroot_inc="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/include"
+    local _sysroot_lib="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/lib"
+    if [[ -d "${_sysroot_inc}" ]]; then
+        CPPFLAGS+=" -I${_sysroot_inc}"
+    fi
+    if [[ -d "${_sysroot_lib}" ]]; then
+        local _lib_suffix=""
+        [[ "$TERMUX_ARCH" == "x86_64" ]] && _lib_suffix="64"
+        LDFLAGS+=" -L${_sysroot_lib}${_lib_suffix}"
+    fi
 
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
         local sdk_ver
@@ -538,18 +557,27 @@ termux_step_pre_configure() {
         _warn "debpython directory not found — skipping placeholder substitution."
     fi
 
-    # -- §14.9  No autoreconf needed ----------------------------------------
-    # CPython ships a fully pre-generated configure script in its source
-    # tarball. The Termux patches modify C source files, Makefile templates,
-    # and Python modules — NOT configure.ac — so there is nothing to regenerate.
-    # Running autoreconf -fi on CPython's configure.ac requires the exact
-    # autoconf/automake/aclocal versions used by the CPython release engineers
-    # (specific m4 macro sets, libtool stubs, etc.). Any other version produces
-    # "possibly undefined macro" errors for standard macros like AC_MSG_ERROR,
-    # AC_DEFINE, and AS_CASE that are pulled in via CPython's own m4/ includes.
-    # The pre-generated ./configure in the tarball is correct and complete —
-    # just use it directly.
-    _info "Skipping autoreconf — using pre-generated configure from tarball."
+    # -- §14.9  Regenerate configure after patching configure.ac -------------
+    # The patches modify configure.ac, so autoreconf must be run to regenerate
+    # the configure script. CPython 3.13 requires exactly autoconf 2.71
+    # (AC_PREREQ([2.71]) in configure.ac). The workflow installs 2.71 from
+    # source to /usr/local so its compiled-in data path (/usr/local/share/autoconf)
+    # is always present and autoconf can find its own M4 macro library.
+    cd "$TERMUX_PKG_SRCDIR"
+    if command -v autoreconf &>/dev/null; then
+        # Verify the version is exactly 2.71 — a different version will either
+        # be rejected by AC_PREREQ or silently produce a broken configure.
+        local _ac_ver
+        _ac_ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
+        if [[ "$_ac_ver" != "2.71" ]]; then
+            _die "autoconf 2.71 required (AC_PREREQ in configure.ac), found: $_ac_ver"
+        fi
+        _info "Running autoreconf -fi (autoconf ${_ac_ver}) ..."
+        autoreconf -fi
+        _ok "autoreconf complete."
+    else
+        _die "autoreconf not found. Install autoconf 2.71 and retry."
+    fi
 }
 
 # =============================================================================
