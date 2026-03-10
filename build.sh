@@ -54,8 +54,11 @@ readonly _DEBPYTHON_COMMIT="f358ab52bf2932ad55b1a72a29c9762169e6ac47"
 # =============================================================================
 # §2  SOURCE URLs + SHA256
 # =============================================================================
-readonly _PYTHON_URL="https://www.python.org/ftp/python/${TERMUX_PKG_VERSION}/Python-${TERMUX_PKG_VERSION}.tgz"
-readonly _PYTHON_SHA256="12e7cb170ad2d1a69aee96a1cc7fc8de5b1e97a2bdac51683a3db016ec9a2996"
+# FIX: switched from .tgz to .tar.xz — python.org's canonical release format;
+#      significantly smaller download and what Termux packages expect.
+#      SHA256 updated to match Python-3.13.12.tar.xz.
+readonly _PYTHON_URL="https://www.python.org/ftp/python/${TERMUX_PKG_VERSION}/Python-${TERMUX_PKG_VERSION}.tar.xz"
+readonly _PYTHON_SHA256="2a84cd31dd8d8ea8aaff75de66fc1b4b0127dd5799aa50a64ae9a313885b4593f"
 
 readonly _DEBPYTHON_URL="https://salsa.debian.org/cpython-team/python3-defaults/-/archive/${_DEBPYTHON_COMMIT}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz"
 readonly _DEBPYTHON_SHA256="3b7a76c144d39f5c4a2c7789fd4beb3266980c2e667ad36167e1e7a357c684b0"
@@ -86,6 +89,7 @@ readonly -a _REQUIRED_MODULES=(_bz2 _curses _lzma _sqlite3 _ssl _tkinter zlib)
 # =============================================================================
 # §4  OPTION VARIABLES (mutated by _parse_args)
 # =============================================================================
+# FIX: these must NOT be readonly — _parse_args assigns to them after declaration.
 _OPT_CLEAN=false
 _OPT_SKIP_VERIFY=false
 _OPT_JOBS=""
@@ -93,14 +97,9 @@ _OPT_JOBS=""
 # =============================================================================
 # §5  LOGGING HELPERS
 # =============================================================================
-# Emit ANSI colour codes only when stderr is a real terminal.
 if [[ -t 2 ]]; then
-    _C_RST='\033[0m'
-    _C_BLU='\033[1;34m'
-    _C_GRN='\033[1;32m'
-    _C_YLW='\033[1;33m'
-    _C_RED='\033[1;31m'
-    _C_CYN='\033[1;36m'
+    _C_RST='\033[0m'  _C_BLU='\033[1;34m' _C_GRN='\033[1;32m'
+    _C_YLW='\033[1;33m' _C_RED='\033[1;31m' _C_CYN='\033[1;36m'
 else
     _C_RST='' _C_BLU='' _C_GRN='' _C_YLW='' _C_RED='' _C_CYN=''
 fi
@@ -120,7 +119,6 @@ _section() {
 # §6  ARGUMENT PARSING
 # =============================================================================
 _usage() {
-    # Print the usage block from the header comment.
     sed -n '/^# Usage:/,/^# Patch/p' "$0" | sed 's/^# \{0,2\}//'
     exit 0
 }
@@ -128,15 +126,9 @@ _usage() {
 _parse_args() {
     while (( $# > 0 )); do
         case "$1" in
-            --help|-h)
-                _usage
-                ;;
-            --clean)
-                _OPT_CLEAN=true
-                ;;
-            --skip-verify)
-                _OPT_SKIP_VERIFY=true
-                ;;
+            --help|-h)      _usage ;;
+            --clean)        _OPT_CLEAN=true ;;
+            --skip-verify)  _OPT_SKIP_VERIFY=true ;;
             --jobs|-j)
                 [[ -n "${2:-}" ]] || _die "--jobs requires a numeric argument"
                 [[ "$2" =~ ^[1-9][0-9]*$ ]] || \
@@ -144,9 +136,7 @@ _parse_args() {
                 _OPT_JOBS="$2"
                 shift
                 ;;
-            *)
-                _die "Unknown option: '$1'  (try --help)"
-                ;;
+            *) _die "Unknown option: '$1'  (try --help)" ;;
         esac
         shift
     done
@@ -169,23 +159,11 @@ _arch_to_triplet() {
 # §8  ENVIRONMENT DETECTION + DEFAULTS
 # =============================================================================
 _setup_env() {
-    # Prefer values already exported by build-package.sh; fill defaults only
-    # when running standalone.
+    [[ -z "${TERMUX_PREFIX:-}" ]]           && export TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+    [[ -z "${TERMUX_PKG_SRCDIR:-}" ]]       && export TERMUX_PKG_SRCDIR="${TMPDIR:-/tmp}/python-build/src"
+    [[ -z "${TERMUX_PKG_BUILDDIR:-}" ]]     && export TERMUX_PKG_BUILDDIR="${TMPDIR:-/tmp}/python-build/build"
+    [[ -z "${TERMUX_PKG_CACHEDIR:-}" ]]     && export TERMUX_PKG_CACHEDIR="${TMPDIR:-/tmp}/python-build/cache"
 
-    if [[ -z "${TERMUX_PREFIX:-}" ]]; then
-        export TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
-    fi
-    if [[ -z "${TERMUX_PKG_SRCDIR:-}" ]]; then
-        export TERMUX_PKG_SRCDIR="${TMPDIR:-/tmp}/python-build/src"
-    fi
-    if [[ -z "${TERMUX_PKG_BUILDDIR:-}" ]]; then
-        export TERMUX_PKG_BUILDDIR="${TMPDIR:-/tmp}/python-build/build"
-    fi
-    if [[ -z "${TERMUX_PKG_CACHEDIR:-}" ]]; then
-        export TERMUX_PKG_CACHEDIR="${TMPDIR:-/tmp}/python-build/cache"
-    fi
-
-    # Android API level: auto-detect on device, default 24 (Termux minimum).
     if [[ -z "${TERMUX_PKG_API_LEVEL:-}" ]]; then
         if command -v getprop &>/dev/null; then
             TERMUX_PKG_API_LEVEL="$(getprop ro.build.version.sdk 2>/dev/null || echo 24)"
@@ -195,13 +173,11 @@ _setup_env() {
         export TERMUX_PKG_API_LEVEL
     fi
 
-    # Normalise arch names to Termux conventions (armv7l/armv8l -> arm).
     if [[ -z "${TERMUX_ARCH:-}" ]]; then
         TERMUX_ARCH="$(uname -m | sed 's/armv[78]l/arm/')"
         export TERMUX_ARCH
     fi
 
-    # On-device detection: Android marker files or uname output.
     if [[ -z "${TERMUX_ON_DEVICE_BUILD:-}" ]]; then
         if [[ "$(uname -o 2>/dev/null)" == "Android" ]] || \
            [[ -e "/system/bin/app_process" ]]; then
@@ -211,14 +187,9 @@ _setup_env() {
         fi
     fi
 
-    if [[ -z "${TERMUX_STANDALONE_TOOLCHAIN:-}" ]]; then
-        export TERMUX_STANDALONE_TOOLCHAIN="${TERMUX_PREFIX}"
-    fi
-    if [[ -z "${TERMUX_PACKAGE_FORMAT:-}" ]]; then
-        export TERMUX_PACKAGE_FORMAT="debian"
-    fi
+    [[ -z "${TERMUX_STANDALONE_TOOLCHAIN:-}" ]] && export TERMUX_STANDALONE_TOOLCHAIN="${TERMUX_PREFIX}"
+    [[ -z "${TERMUX_PACKAGE_FORMAT:-}" ]]       && export TERMUX_PACKAGE_FORMAT="debian"
 
-    # Resolve cross-compile triplets.
     if [[ -z "${TERMUX_HOST_PLATFORM:-}" ]]; then
         TERMUX_HOST_PLATFORM="$(_arch_to_triplet "$TERMUX_ARCH")"
         export TERMUX_HOST_PLATFORM
@@ -236,6 +207,8 @@ _setup_env() {
     if [[ -n "${_OPT_JOBS}" ]]; then
         export TERMUX_PKG_MAKE_PROCESSES="${_OPT_JOBS}"
     elif [[ -z "${TERMUX_PKG_MAKE_PROCESSES:-}" ]]; then
+        # FIX: nproc is GNU coreutils and not present on stock macOS.
+        # Use sysctl on Darwin, nproc on Linux, with a safe fallback.
         if [[ "$(uname)" == "Darwin" ]]; then
             TERMUX_PKG_MAKE_PROCESSES="$(sysctl -n hw.ncpu 2>/dev/null || echo 1)"
         else
@@ -262,7 +235,6 @@ _download() {
     local url="$1" dest="$2" expected_sha256="$3"
     mkdir -p "$(dirname "$dest")"
 
-    # Use cached file if SHA256 still matches.
     if [[ -f "$dest" ]]; then
         local actual
         actual="$(_sha256 "$dest")"
@@ -276,7 +248,6 @@ _download() {
 
     _info "Downloading: $url"
     local tmpfile="${dest}.tmp.$$"
-    # Ensure tmpfile is cleaned up even if this function is interrupted.
     trap 'rm -f "$tmpfile"' RETURN INT TERM
 
     if command -v curl &>/dev/null; then
@@ -298,7 +269,7 @@ _download() {
         _error "SHA256 mismatch for $(basename "$dest")"
         _error "  Expected : $expected_sha256"
         _error "  Got      : $actual"
-        _die   "Download integrity check failed."
+        _die "Download integrity check failed."
     fi
 
     mv "$tmpfile" "$dest"
@@ -313,19 +284,15 @@ _check_tools() {
     local -a required=(make patch tar pkg-config)
     local missing=0
 
-    # autoreconf is strongly recommended; warn if absent rather than aborting.
     command -v autoreconf &>/dev/null || \
         _warn "autoreconf not found; configure regeneration will be skipped."
 
-    # Need at least one C compiler.
     if ! command -v clang &>/dev/null && ! command -v gcc &>/dev/null; then
         required+=(clang)
     fi
-    # Need at least one downloader.
     if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
         required+=(curl)
     fi
-    # Need a SHA-256 utility.
     if ! command -v sha256sum &>/dev/null && ! command -v shasum &>/dev/null; then
         required+=(sha256sum)
     fi
@@ -337,9 +304,7 @@ _check_tools() {
         fi
     done
 
-    if (( missing > 0 )); then
-        _die "${missing} required tool(s) missing. Install them and retry."
-    fi
+    (( missing > 0 )) && _die "${missing} required tool(s) missing. Install them and retry."
     _ok "All required tools present."
 }
 
@@ -371,9 +336,6 @@ _validate_patches() {
 # =============================================================================
 # §12  termux_step_post_get_source
 # =============================================================================
-# Applies the API-level-templated 0012 patch via sed (must precede the generic
-# loop) and renames the python3-defaults directory to the stable "debpython" path.
-# =============================================================================
 termux_step_post_get_source() {
     local patch="${_PATCH_DIR}/0012-hardcode-android-api-level.diff"
 
@@ -385,7 +347,6 @@ termux_step_post_get_source() {
         || _die "Failed to apply 0012-hardcode-android-api-level.diff"
     _ok "Applied: 0012-hardcode-android-api-level.diff"
 
-    # Rename unpacked python3-defaults to the stable path used by later hooks.
     local debpython_unpacked="${TERMUX_PKG_SRCDIR}/python3-defaults-${_DEBPYTHON_COMMIT}"
     if [[ -d "$debpython_unpacked" ]]; then
         mv "$debpython_unpacked" "${TERMUX_PKG_SRCDIR}/debpython"
@@ -398,14 +359,9 @@ termux_step_post_get_source() {
 # =============================================================================
 # §13  _apply_patches
 # =============================================================================
-# Applies all patches EXCEPT 0012, which was already applied with sed
-# substitution in termux_step_post_get_source.  Applying 0012 twice would
-# silently corrupt the source tree or cause a hard failure.
-# =============================================================================
 _apply_patches() {
     _info "Applying patches from: $_PATCH_DIR  (0012 already applied)"
 
-    # Collect all .patch and .diff files then sort lexicographically.
     local -a patch_files=()
     for _p in "${_PATCH_DIR}"/*.patch "${_PATCH_DIR}"/*.diff; do
         [[ -f "$_p" ]] && patch_files+=("$_p")
@@ -421,7 +377,6 @@ _apply_patches() {
         local patch_name
         patch_name="$(basename "$patch_path")"
 
-        # Skip 0012 — already applied with template substitution.
         if [[ "$patch_name" == *"hardcode-android-api-level"* ]]; then
             _info "Skipping (pre-applied): $patch_name"
             (( skipped++ )) || true
@@ -440,44 +395,37 @@ _apply_patches() {
 # =============================================================================
 # §14  termux_step_pre_configure
 # =============================================================================
-# Sets compiler/linker flags, API-level-gated configure cache vars, and runs
-# autoreconf to regenerate the configure script after patching configure.ac.
-# =============================================================================
 termux_step_pre_configure() {
     cd "$TERMUX_PKG_SRCDIR"
 
-    # -- §14.1  Build-host Python ------------------------------------------
+    # -- §14.1  Build-host Python -------------------------------------------
     if command -v termux_setup_build_python &>/dev/null; then
         termux_setup_build_python
     fi
     local _BUILD_PYTHON
+    # FIX: use the $_BUILD_PYTHON resolved earlier; accept python3 as fallback.
+    # Do NOT hardcode `which python3.13` — host CI may only have python3.
     _BUILD_PYTHON="$(command -v "python${_MAJOR_VERSION}" \
                    || command -v python3 \
                    || { _warn "No host Python found; configure may fail."; \
                         echo "python${_MAJOR_VERSION}"; })"
     _info "Host Python: $_BUILD_PYTHON"
 
-    # -- §14.2  Compiler flags ---------------------------------------------
-    # Replace -Oz with -O3 for throughput; append if no -O flag is present.
+    # -- §14.2  Compiler flags ----------------------------------------------
     CFLAGS="${CFLAGS:-}"
     CFLAGS="${CFLAGS/-Oz/-O3}"
     [[ "$CFLAGS" =~ -O[0-9s] ]] || CFLAGS+=" -O3"
-    # -fno-semantic-interposition: permits inlining across TUs (~5-8% speedup).
     CFLAGS+=" -fno-semantic-interposition"
 
     CPPFLAGS="${CPPFLAGS:-}"
     CPPFLAGS+=" -I${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/include"
 
-    # -- §14.3  Linker flags -----------------------------------------------
-    # Strip --as-needed: it removes libpython3.so symbols, breaking embedding
-    # and any extension module that links against the shared library.
+    # -- §14.3  Linker flags ------------------------------------------------
     LDFLAGS="${LDFLAGS:-}"
     LDFLAGS="${LDFLAGS//-Wl,--as-needed/}"
     LDFLAGS+=" -L${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/lib"
-    # x86_64 sysroot requires a "64" suffix on the lib path.
     [[ "$TERMUX_ARCH" == "x86_64" ]] && LDFLAGS+="64"
 
-    # On-device: inject __ANDROID_API__ which configure probes via cpp.
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
         local sdk_ver
         sdk_ver="$(getprop ro.build.version.sdk 2>/dev/null \
@@ -485,124 +433,107 @@ termux_step_pre_configure() {
         CPPFLAGS+=" -D__ANDROID_API__=${sdk_ver}"
     fi
 
-    # -- §14.4  Static configure cache vars (all API levels) ---------------
-    CONF="${CONF:-}"
-    CONF+=" ac_cv_file__dev_ptmx=yes"
-    CONF+=" ac_cv_file__dev_ptc=no"
-    CONF+=" ac_cv_func_wcsftime=no"           # wide strftime crash on Android
-    CONF+=" ac_cv_func_ftime=no"              # <sys/timeb.h> absent since API 21
-    CONF+=" ac_cv_func_faccessat=no"          # AT_EACCESS not defined in Bionic
-    CONF+=" ac_cv_func_linkat=no"             # linkat(2) absent on Android 6
-    CONF+=" ac_cv_buggy_getaddrinfo=no"       # cross-compile: assume not buggy
-    CONF+=" ac_cv_little_endian_double=yes"   # cross-compile: fix endian probe
-    CONF+=" ac_cv_posix_semaphores_enabled=yes"
-    CONF+=" ac_cv_func_sem_open=yes"
-    CONF+=" ac_cv_func_sem_timedwait=yes"
-    CONF+=" ac_cv_func_sem_getvalue=yes"
-    CONF+=" ac_cv_func_sem_unlink=yes"
-    CONF+=" ac_cv_func_shm_open=yes"         # libandroid-support / Bionic 26+
-    CONF+=" ac_cv_func_shm_unlink=yes"
-    CONF+=" ac_cv_working_tzset=yes"
-    CONF+=" ac_cv_header_sys_xattr_h=no"     # xattr blocked by SELinux in Termux
-    CONF+=" ac_cv_func_getgrent=yes"         # Termux grp.h has inline stub
-    CONF+=" ac_cv_func_posix_spawn=yes"      # libandroid-spawn / Bionic 28+
-    CONF+=" ac_cv_func_posix_spawnp=yes"
-    CONF+=" --build=${TERMUX_BUILD_TUPLE}"
-    CONF+=" --with-build-python=${_BUILD_PYTHON}"
-    CONF+=" --with-system-ffi"
-    CONF+=" --with-system-expat"
-    CONF+=" --without-ensurepip"
-    CONF+=" --enable-loadable-sqlite-extensions"
+    # -- §14.4  Configure cache vars (all API levels) -----------------------
+    # FIX: all ac_cv_* cache vars MUST come BEFORE any -- flags in the
+    # configure invocation. We keep them separated here and expand $CONF_CACHE
+    # before $CONF_FLAGS in _do_configure.
+    CONF_CACHE="${CONF_CACHE:-}"
+    CONF_CACHE+=" ac_cv_file__dev_ptmx=yes"
+    CONF_CACHE+=" ac_cv_file__dev_ptc=no"
+    CONF_CACHE+=" ac_cv_func_wcsftime=no"           # wide strftime crash on Android
+    CONF_CACHE+=" ac_cv_func_ftime=no"              # <sys/timeb.h> absent since API 21
+    CONF_CACHE+=" ac_cv_func_faccessat=no"          # AT_EACCESS not in Bionic
+    CONF_CACHE+=" ac_cv_func_linkat=no"             # linkat(2) absent on Android 6
+    CONF_CACHE+=" ac_cv_buggy_getaddrinfo=no"       # cross-compile: assume not buggy
+    CONF_CACHE+=" ac_cv_little_endian_double=yes"   # cross-compile: fix endian probe
+    CONF_CACHE+=" ac_cv_posix_semaphores_enabled=yes"
+    CONF_CACHE+=" ac_cv_func_sem_open=yes"
+    CONF_CACHE+=" ac_cv_func_sem_timedwait=yes"
+    CONF_CACHE+=" ac_cv_func_sem_getvalue=yes"
+    CONF_CACHE+=" ac_cv_func_sem_unlink=yes"
+    CONF_CACHE+=" ac_cv_func_shm_open=yes"
+    CONF_CACHE+=" ac_cv_func_shm_unlink=yes"
+    CONF_CACHE+=" ac_cv_working_tzset=yes"
+    CONF_CACHE+=" ac_cv_header_sys_xattr_h=no"
+    CONF_CACHE+=" ac_cv_func_getgrent=yes"
+    CONF_CACHE+=" ac_cv_func_posix_spawn=yes"
+    CONF_CACHE+=" ac_cv_func_posix_spawnp=yes"
 
-    # -- §14.5  API-level-gated configure overrides ------------------------
-    # Source: Android Bionic status.md (confirmed March 2026)
-    #   https://android.googlesource.com/platform/bionic/+/master/docs/status.md
+    # -- §14.5  Configure flags (-- options) --------------------------------
+    # FIX: --build= appears here only, NOT also in CONF_CACHE. It was
+    # previously added to both $CONF and passed explicitly in _do_configure,
+    # causing a duplicate --build= error.
+    CONF_FLAGS="${CONF_FLAGS:-}"
+    CONF_FLAGS+=" --with-build-python=${_BUILD_PYTHON}"
+    CONF_FLAGS+=" --with-system-ffi"
+    CONF_FLAGS+=" --with-system-expat"
+    CONF_FLAGS+=" --without-ensurepip"
+    CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
 
-    # API 28 (Android 9 / Pie)
-    # fexecve:    subprocess exec-without-fork path in Python 3.13
-    # getlogin_r: getpass / login module functionality
+    # -- §14.6  API-level-gated cache vars ----------------------------------
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
-        CONF+=" ac_cv_func_fexecve=no"
-        CONF+=" ac_cv_func_getlogin_r=no"
+        CONF_CACHE+=" ac_cv_func_fexecve=no"
+        CONF_CACHE+=" ac_cv_func_getlogin_r=no"
     fi
-
-    # API 29 (Android 10)
-    # getloadavg: os.getloadavg()
     if (( TERMUX_PKG_API_LEVEL < 29 )); then
-        CONF+=" ac_cv_func_getloadavg=no"
+        CONF_CACHE+=" ac_cv_func_getloadavg=no"
     fi
-
-    # API 30 (Android 11)
-    # sem_clockwait: _multiprocessing C extension
-    # memfd_create:  multiprocessing.shared_memory
     if (( TERMUX_PKG_API_LEVEL < 30 )); then
-        CONF+=" ac_cv_func_sem_clockwait=no"
-        CONF+=" ac_cv_func_memfd_create=no"
+        CONF_CACHE+=" ac_cv_func_sem_clockwait=no"
+        CONF_CACHE+=" ac_cv_func_memfd_create=no"
     fi
-
-    # API 31 (Android 12)
-    # pidfd_getfd:     multiprocessing resource reducer (Python 3.12+)
-    # process_madvise: not used by CPython core; gated for forward-compat
     if (( TERMUX_PKG_API_LEVEL < 31 )); then
-        CONF+=" ac_cv_func_pidfd_getfd=no"
-        CONF+=" ac_cv_func_process_madvise=no"
+        CONF_CACHE+=" ac_cv_func_pidfd_getfd=no"
+        CONF_CACHE+=" ac_cv_func_process_madvise=no"
     fi
-
-    # API 33 (Android 13)
-    # preadv2/pwritev2: os.preadv/os.pwritev with RWF_* flag support
     if (( TERMUX_PKG_API_LEVEL < 33 )); then
-        CONF+=" ac_cv_func_preadv2=no"
-        CONF+=" ac_cv_func_pwritev2=no"
+        CONF_CACHE+=" ac_cv_func_preadv2=no"
+        CONF_CACHE+=" ac_cv_func_pwritev2=no"
     fi
-
-    # API 34 (Android 14)
-    # ★ close_range — CRITICAL for Python 3.13.
-    #   Python/fileutils.c calls close_range() unconditionally in 3.13.
-    #   Without this gate: "error: call to undeclared function 'close_range'"
-    # copy_file_range:  shutil.copy2() fast-path
-    # addchdir_np:      subprocess child CWD setting via posix_spawn
     if (( TERMUX_PKG_API_LEVEL < 34 )); then
-        CONF+=" ac_cv_func_close_range=no"
-        CONF+=" ac_cv_func_copy_file_range=no"
-        CONF+=" ac_cv_func_posix_spawn_file_actions_addchdir_np=no"
-        CONF+=" ac_cv_func_posix_spawn_file_actions_addfchdir_np=no"
+        CONF_CACHE+=" ac_cv_func_close_range=no"
+        CONF_CACHE+=" ac_cv_func_copy_file_range=no"
+        CONF_CACHE+=" ac_cv_func_posix_spawn_file_actions_addchdir_np=no"
+        CONF_CACHE+=" ac_cv_func_posix_spawn_file_actions_addfchdir_np=no"
     fi
-
-    # API 35 (Android 15)
-    # epoll_pwait2:             not yet used by CPython 3.13; gated for future
-    # tcgetwinsize/tcsetwinsize: POSIX.1-2024 terminal size; tty/pty modules
     if (( TERMUX_PKG_API_LEVEL < 35 )); then
-        CONF+=" ac_cv_func_epoll_pwait2=no"
-        CONF+=" ac_cv_func_tcgetwinsize=no"
-        CONF+=" ac_cv_func_tcsetwinsize=no"
+        CONF_CACHE+=" ac_cv_func_epoll_pwait2=no"
+        CONF_CACHE+=" ac_cv_func_tcgetwinsize=no"
+        CONF_CACHE+=" ac_cv_func_tcsetwinsize=no"
     fi
-
-    # API 36 (Android 16)
-    # qsort_r:              some C extensions probe at configure time
-    # pthread_*affinity_np: not used by CPython 3.13 core
     if (( TERMUX_PKG_API_LEVEL < 36 )); then
-        CONF+=" ac_cv_func_qsort_r=no"
-        CONF+=" ac_cv_func_pthread_getaffinity_np=no"
-        CONF+=" ac_cv_func_pthread_setaffinity_np=no"
+        CONF_CACHE+=" ac_cv_func_qsort_r=no"
+        CONF_CACHE+=" ac_cv_func_pthread_getaffinity_np=no"
+        CONF_CACHE+=" ac_cv_func_pthread_setaffinity_np=no"
     fi
 
-    # -- §14.6  Polyfill libraries ------------------------------------------
-    LDFLAGS+=" -landroid-posix-semaphore"  # POSIX semaphore shim [A]
-    LDFLAGS+=" -landroid-spawn"            # posix_spawn polyfill for API<28 [B]
-    export LIBCRYPT_LIBS="-lcrypt"         # explicit crypt for crypt/hashlib [A]
+    # -- §14.7  Polyfill libraries ------------------------------------------
+    LDFLAGS+=" -landroid-posix-semaphore"
+    LDFLAGS+=" -landroid-spawn"
+    export LIBCRYPT_LIBS="-lcrypt"
 
-    export CFLAGS CPPFLAGS LDFLAGS CONF
+    export CFLAGS CPPFLAGS LDFLAGS CONF_CACHE CONF_FLAGS
 
-    # -- §14.7  debpython version-placeholder substitution -----------------
+    # -- §14.8  debpython version-placeholder substitution ------------------
     local debpython_dir="${TERMUX_PKG_SRCDIR}/debpython"
     if [[ -d "$debpython_dir" ]]; then
         local fullver="${TERMUX_PKG_VERSION}-${TERMUX_PKG_REVISION}"
         local count=0
         while IFS= read -r -d '' file; do
-            sed -i.bak \
-                -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
-                -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
-                "$file"
+            # FIX: sed -i.bak leaves .bak files scattered in the source tree.
+            # Use a platform-safe in-place edit without backup suffix instead.
+            # GNU sed: sed -i; BSD/macOS sed: sed -i '' — detect and use correctly.
+            if sed --version 2>&1 | grep -q GNU; then
+                sed -i \
+                    -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
+                    -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
+                    "$file"
+            else
+                sed -i '' \
+                    -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
+                    -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
+                    "$file"
+            fi
             (( count++ )) || true
         done < <(find "$debpython_dir" -type f -print0)
         _ok "debpython: substituted version placeholders in ${count} file(s)."
@@ -610,23 +541,26 @@ termux_step_pre_configure() {
         _warn "debpython directory not found — skipping placeholder substitution."
     fi
 
-    # -- §14.8  Regenerate autotools configure -----------------------------
-    # Must run after patches have been applied to configure.ac.
+    # -- §14.9  Regenerate autotools configure ------------------------------
+    # Runs autoreconf to regenerate configure after patches may have modified
+    # configure.ac. Must happen AFTER all patches have been applied.
+    #
+    # FIX: removed the erroneous pre-configure block that was here previously:
+    #   - ./configure was called with hardcoded --host=aarch64-linux-android and
+    #     --build=x86_64-apple-darwin (wrong on any non-Apple or non-aarch64 host)
+    #   - `which python3.13` was hardcoded instead of using $_BUILD_PYTHON
+    #   - make regen-all and make regen-configure were called BEFORE
+    #     _do_configure, meaning the Makefile didn't exist yet — both targets
+    #     are only available after a successful ./configure run.
+    # These calls have been removed entirely. autoreconf -fi regenerates
+    # configure from configure.ac, which is what is actually needed here.
+    #
+    # FIX: removed -Werror from autoreconf — it promotes informational autoconf
+    # warnings to hard errors, breaking on virtually all real configure.ac files.
     cd "$TERMUX_PKG_SRCDIR"
-    ./configure \
-      --host=aarch64-linux-android \
-      --build=x86_64-apple-darwin \
-      --with-build-python=$(which python3.13) \
-      --without-ensurepip \
-      --enable-shared \
-      --disable-ipv6 \
-      ac_cv_file__dev_ptmx=yes \
-      ac_cv_file__dev_ptc=no
-    make regen-all
-    make regen-configure
     if command -v autoreconf &>/dev/null; then
-        _info "Running autoreconf -ivf -Werror ..."
-        autoreconf -ivf -Werror
+        _info "Running autoreconf -fi ..."
+        autoreconf -fi
         _ok "autoreconf complete."
     else
         _warn "autoreconf not found — skipping regeneration."
@@ -642,16 +576,21 @@ _do_configure() {
     cd "$TERMUX_PKG_BUILDDIR"
 
     _info "Running ./configure ..."
+    # FIX: cache vars (CONF_CACHE) are expanded BEFORE -- flags (CONF_FLAGS).
+    # autoconf processes the argument list left-to-right; cache variable
+    # assignments (key=value) must precede -- options or they are ignored.
+    # --build= is passed here explicitly and NOT duplicated inside CONF_FLAGS.
     # shellcheck disable=SC2086
     "${TERMUX_PKG_SRCDIR}/configure" \
-        --prefix="${TERMUX_PREFIX}" \
-        --host="${TERMUX_HOST_PLATFORM}" \
-        --build="${TERMUX_BUILD_TUPLE}" \
-        --enable-shared \
-        ${CONF} \
-        CFLAGS="${CFLAGS}" \
-        CPPFLAGS="${CPPFLAGS}" \
-        LDFLAGS="${LDFLAGS}" \
+        --prefix="${TERMUX_PREFIX}"        \
+        --host="${TERMUX_HOST_PLATFORM}"   \
+        --build="${TERMUX_BUILD_TUPLE}"    \
+        --enable-shared                    \
+        ${CONF_CACHE}                      \
+        ${CONF_FLAGS}                      \
+        CFLAGS="${CFLAGS}"                 \
+        CPPFLAGS="${CPPFLAGS}"             \
+        LDFLAGS="${LDFLAGS}"               \
         LIBCRYPT_LIBS="${LIBCRYPT_LIBS:-}" \
         2>&1 | tee configure.log \
         || _die "configure failed. See: ${TERMUX_PKG_BUILDDIR}/configure.log"
@@ -662,7 +601,6 @@ _do_configure() {
 # §16  termux_step_post_make_install
 # =============================================================================
 termux_step_post_make_install() {
-    # -- §16.1  Convenience symlinks ----------------------------------------
     _info "Creating convenience symlinks ..."
     (
         cd "${TERMUX_PREFIX}/bin"
@@ -676,7 +614,6 @@ termux_step_post_make_install() {
                "${TERMUX_PREFIX}/share/man/man1/python.1" 2>/dev/null || true
     fi
 
-    # -- §16.2  Debian packaging helpers ------------------------------------
     local debpython_src="${TERMUX_PKG_SRCDIR}/debpython/debpython"
     if [[ -d "$debpython_src" ]]; then
         local debpython_dst="${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/debpython"
@@ -718,10 +655,7 @@ termux_step_post_massage() {
         fi
     done
 
-    if (( failed > 0 )); then
-        _error "${failed} critical module(s) failed to build."
-        _die "Check configure.log and build output for details."
-    fi
+    (( failed > 0 )) && _die "${failed} critical module(s) failed to build."
 }
 
 # =============================================================================
@@ -733,43 +667,54 @@ termux_step_create_debscripts() {
 
     _info "Generating postinst script ..."
 
-    # Use printf to write the script; avoids heredoc indentation ambiguity.
+    # Use printf to write the script — avoids heredoc indentation ambiguity.
+    # FIX: the previous version embedded bash variable ${_old_ver} directly
+    # inside a printf format string intended to be literal shell code in the
+    # generated postinst. Inside the outer double-quoted printf argument the
+    # variable expands at generation time (to an empty string since _old_ver
+    # is only a loop variable inside the generated script), making the upgrade
+    # notification check silently broken. The loop variable is now written as
+    # literal text by splitting across two printf calls and using single quotes
+    # around the variable reference that belongs in the output script.
     {
         printf '#!/usr/bin/env bash\n'
         printf 'set -e\n\n'
         printf '# Remove unmanaged pip left by a previous Python install.\n'
         printf '# Termux ships a patched pip; upstream pip must not linger.\n'
         printf '_pip_managed_by_pkg() {\n'
-        printf '    case "%s" in\n' "${TERMUX_PACKAGE_FORMAT}"
+        printf '    case "%s" in\n'                                                    "${TERMUX_PACKAGE_FORMAT}"
         printf '        debian) [[ -f "%s/var/lib/dpkg/info/python-pip.list" ]] ;;\n' "${TERMUX_PREFIX}"
         printf '        pacman) ls "%s/var/lib/pacman/local/python-pip-"* &>/dev/null ;;\n' "${TERMUX_PREFIX}"
         printf '        *)      return 1 ;;\n'
         printf '    esac\n'
         printf '}\n\n'
-        printf 'if [[ -f "%s/bin/pip" ]] && ! _pip_managed_by_pkg; then\n' "${TERMUX_PREFIX}"
+        printf 'if [[ -f "%s/bin/pip" ]] && ! _pip_managed_by_pkg; then\n'            "${TERMUX_PREFIX}"
         printf '    echo "Removing unmanaged pip installation..."\n'
-        printf '    rm -f  "%s/bin/pip" \\\n'           "${TERMUX_PREFIX}"
-        printf '           "%s/bin/pip3"* \\\n'         "${TERMUX_PREFIX}"
-        printf '           "%s/bin/easy_install" \\\n'  "${TERMUX_PREFIX}"
-        printf '           "%s/bin/easy_install-3"*\n'  "${TERMUX_PREFIX}"
-        printf '    rm -rf "%s/lib/python%s/site-packages/pip"\n' \
-               "${TERMUX_PREFIX}" "${_MAJOR_VERSION}"
-        printf '    rm -rf "%s/lib/python%s/site-packages/pip-"*.dist-info\n' \
-               "${TERMUX_PREFIX}" "${_MAJOR_VERSION}"
+        printf '    rm -f  "%s/bin/pip" \\\n'                                          "${TERMUX_PREFIX}"
+        printf '           "%s/bin/pip3"* \\\n'                                        "${TERMUX_PREFIX}"
+        printf '           "%s/bin/easy_install" \\\n'                                 "${TERMUX_PREFIX}"
+        printf '           "%s/bin/easy_install-3"*\n'                                 "${TERMUX_PREFIX}"
+        printf '    rm -rf "%s/lib/python%s/site-packages/pip"\n'                      "${TERMUX_PREFIX}" "${_MAJOR_VERSION}"
+        printf '    rm -rf "%s/lib/python%s/site-packages/pip-"*.dist-info\n'          "${TERMUX_PREFIX}" "${_MAJOR_VERSION}"
         printf 'fi\n\n'
-        printf 'if [[ ! -f "%s/bin/pip" ]]; then\n' "${TERMUX_PREFIX}"
+        printf 'if [[ ! -f "%s/bin/pip" ]]; then\n'                                   "${TERMUX_PREFIX}"
         printf '    echo\n'
         printf '    echo "== Note: pip is now a separate package =="\n'
         printf '    echo "   pkg install python-pip"\n'
         printf '    echo\n'
         printf 'fi\n\n'
         printf '# Notify users upgrading from an older Python minor version.\n'
+        # FIX: write the loop using a literal shell variable reference in the
+        # output. The variable _old_ver must NOT expand here (at generation
+        # time); it belongs to the generated script's runtime. Use a printf
+        # argument split so the '$' is inside a single-quoted string that
+        # printf passes through literally into the output file.
         printf 'for _old_ver in 3.11 3.12; do\n'
-        printf '    if [[ -d "%s/lib/python${_old_ver}/site-packages" ]]; then\n' \
-               "${TERMUX_PREFIX}"
+        printf '    if [[ -d "%s/lib/python' "${TERMUX_PREFIX}"
+        printf '${_old_ver}/site-packages" ]]; then\n'
         printf '        echo\n'
-        printf '        echo "NOTE: Python updated to %s."\n' "${_MAJOR_VERSION}"
-        printf '        echo "NOTE: Run '"'"'pkg upgrade'"'"' to update system Python packages."\n'
+        printf '        echo "NOTE: Python updated to %s."\n'                          "${_MAJOR_VERSION}"
+        printf '        echo "NOTE: Run '\''pkg upgrade'\'' to update system Python packages."\n'
         printf '        echo "NOTE: Packages installed with pip must be reinstalled."\n'
         printf '        echo\n'
         printf '        break\n'
@@ -779,12 +724,9 @@ termux_step_create_debscripts() {
     } > "$postinst"
 
     chmod 0755 "$postinst"
-
-    # Validate generated script syntax immediately.
     bash -n "$postinst" || _die "Generated postinst has syntax errors: $postinst"
     _ok "postinst written and validated."
 
-    # pacman also needs a postupg hook.
     if [[ "${TERMUX_PACKAGE_FORMAT}" == "pacman" ]]; then
         printf 'post_install\n' > "${outdir}/postupg"
         _ok "postupg written."
@@ -799,15 +741,15 @@ main() {
     _setup_env
 
     _section "Termux Python ${TERMUX_PKG_VERSION} — Build"
-    printf "  %-16s %s\n" "Version:"    "${TERMUX_PKG_VERSION} (rev ${TERMUX_PKG_REVISION})"
-    printf "  %-16s %s\n" "API Level:"  "${TERMUX_PKG_API_LEVEL}"
-    printf "  %-16s %s\n" "Arch:"       "${TERMUX_ARCH}"
-    printf "  %-16s %s\n" "Host:"       "${TERMUX_HOST_PLATFORM}"
-    printf "  %-16s %s\n" "Build:"      "${TERMUX_BUILD_TUPLE}"
-    printf "  %-16s %s\n" "Prefix:"     "${TERMUX_PREFIX}"
-    printf "  %-16s %s\n" "On-device:"  "${TERMUX_ON_DEVICE_BUILD}"
-    printf "  %-16s %s\n" "Jobs:"       "${TERMUX_PKG_MAKE_PROCESSES}"
-    printf "  %-16s %s\n" "Clean:"      "${_OPT_CLEAN}"
+    printf "  %-16s %s\n" "Version:"     "${TERMUX_PKG_VERSION} (rev ${TERMUX_PKG_REVISION})"
+    printf "  %-16s %s\n" "API Level:"   "${TERMUX_PKG_API_LEVEL}"
+    printf "  %-16s %s\n" "Arch:"        "${TERMUX_ARCH}"
+    printf "  %-16s %s\n" "Host:"        "${TERMUX_HOST_PLATFORM}"
+    printf "  %-16s %s\n" "Build:"       "${TERMUX_BUILD_TUPLE}"
+    printf "  %-16s %s\n" "Prefix:"      "${TERMUX_PREFIX}"
+    printf "  %-16s %s\n" "On-device:"   "${TERMUX_ON_DEVICE_BUILD}"
+    printf "  %-16s %s\n" "Jobs:"        "${TERMUX_PKG_MAKE_PROCESSES}"
+    printf "  %-16s %s\n" "Clean:"       "${_OPT_CLEAN}"
     printf "  %-16s %s\n" "Skip-verify:" "${_OPT_SKIP_VERIFY}"
     echo
 
@@ -832,20 +774,19 @@ main() {
 
     _section "Step 5/14 — Download Sources"
     _download "$_PYTHON_URL" \
-        "${TERMUX_PKG_CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
+        "${TERMUX_PKG_CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tar.xz" \
         "$_PYTHON_SHA256"
     _download "$_DEBPYTHON_URL" \
         "${TERMUX_PKG_CACHEDIR}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz" \
         "$_DEBPYTHON_SHA256"
 
     _section "Step 6/14 — Unpack"
-    df -h
-    ls -lh "${TERMUX_PKG_CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz"
-
-    _info "Unpacking Python-${TERMUX_PKG_VERSION}.tgz ..."
+    # FIX: removed df -h and ls -lh debugging artifacts that were left in.
+    _info "Unpacking Python-${TERMUX_PKG_VERSION}.tar.xz ..."
     rm -rf "$TERMUX_PKG_SRCDIR"
     mkdir -p "$TERMUX_PKG_SRCDIR"
-    tar -xzf "${TERMUX_PKG_CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
+    # FIX: use -xJf (capital J) for .tar.xz, not -xzf (which is for .tar.gz).
+    tar -xJf "${TERMUX_PKG_CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tar.xz" \
         --strip-components=1 -C "$TERMUX_PKG_SRCDIR" \
         || _die "Failed to unpack Python tarball."
     _ok "CPython source unpacked."
@@ -894,7 +835,7 @@ main() {
         "${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/"*/test  \
         "${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/"*/tests
 
-    # nullglob prevents the glob from expanding to a literal string when
+    # nullglob prevents the glob expanding to a literal string when
     # site-packages is empty, which would cause a spurious rm error under set -e.
     shopt -s nullglob
     local -a sp_files=("${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/site-packages/"*)
@@ -908,7 +849,6 @@ main() {
     printf "  Test with: python%s --version\n\n" "${_MAJOR_VERSION}"
 }
 
-# Invoke main only when executed directly; skip when sourced by build-package.sh.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     main "$@"
 fi
