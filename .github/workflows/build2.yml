@@ -53,44 +53,51 @@ jobs:
           } >> "$GITHUB_ENV"
 
       # ── Autoconf 2.71 ────────────────────────────────────────────────────────
-      # CPython 3.13's configure.ac has AC_PREREQ([2.71]) — exactly 2.71 is
-      # required. The patches modify configure.ac so autoreconf must be run.
-      #
-      # Must be built from source: Homebrew only ships 2.72 which is rejected
-      # by AC_PREREQ([2.71]) — autoconf treats the prereq as a minimum AND
-      # an exact minor-version gate for some internal macro sets.
-      #
-      # Key fix vs previous attempts: configure with --prefix=/usr/local so
-      # the compiled-in data directory path (/usr/local/share/autoconf) exists
-      # and is found correctly. Building to $HOME/.local baked in a path that
-      # didn't match the runner's home dir, causing "possibly undefined macro"
-      # for AC_MSG_ERROR / AC_DEFINE / AS_CASE.
+      # CPython 3.13's configure.ac has AC_PREREQ([2.71]). The patches modify
+      # configure.ac so autoreconf must be run with exactly 2.71.
+      # Homebrew only provides 2.72 and /usr/local already has it, so both
+      # shadow our install. Fix: install to a dedicated prefix ($RUNNER_TOOL_CACHE)
+      # and prepend it to PATH via GITHUB_PATH so it wins over everything else.
       - name: Install Autoconf 2.71
         run: |
           set -euo pipefail
+          AC_PREFIX="$RUNNER_TOOL_CACHE/autoconf-2.71"
           curl -fsSL https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz \
             -o autoconf-2.71.tar.gz
           file autoconf-2.71.tar.gz | grep -q "gzip compressed" || \
-            { echo "❌ autoconf tarball looks corrupt"; exit 1; }
+            { echo "autoconf tarball looks corrupt"; exit 1; }
           tar xf autoconf-2.71.tar.gz
           cd autoconf-2.71
-          # Use /usr/local so the compiled-in share/autoconf data path exists.
-          # The runner has write access to /usr/local on macos-14.
-          ./configure --prefix=/usr/local
+          ./configure --prefix="$AC_PREFIX"
           make -j"$(sysctl -n hw.logicalcpu)"
-          sudo make install
-          # /usr/local/bin is already on PATH on macOS runners — no GITHUB_PATH needed.
-          autoconf --version | head -1
-          autoreconf --version | head -1
+          make install
+          # Prepend to PATH — GITHUB_PATH prepends, so this wins over
+          # /usr/local/bin (2.72) and /opt/homebrew/bin (2.72).
+          echo "$AC_PREFIX/bin" >> "$GITHUB_PATH"
+          # Export the data dir so autoconf finds its own macro library
+          # at the exact prefix it was built with.
+          echo "AUTOCONF_DATADIR=$AC_PREFIX/share/autoconf" >> "$GITHUB_ENV"
+          echo "AC_PREFIX=$AC_PREFIX" >> "$GITHUB_ENV"
+          # Export explicit binary paths so autoreconf (and any subprocess) cannot
+          # accidentally resolve a different autoconf from /usr/local or Homebrew.
+          # autoreconf honours the AUTOCONF env var when invoking autoconf internally.
+          echo "AUTOCONF=$AC_PREFIX/bin/autoconf" >> "$GITHUB_ENV"
+          echo "AUTORECONF=$AC_PREFIX/bin/autoreconf" >> "$GITHUB_ENV"
+          echo "AUTOHEADER=$AC_PREFIX/bin/autoheader" >> "$GITHUB_ENV"
+          echo "AUTOM4TE=$AC_PREFIX/bin/autom4te" >> "$GITHUB_ENV"
 
       - name: Verify Autoconf 2.71
         run: |
           set -euo pipefail
-          ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-          [[ "$ver" == "2.71" ]] || { echo "❌ Expected autoconf 2.71, got $ver"; exit 1; }
-          echo "✅ autoconf $ver confirmed"
           which autoconf
           which autoreconf
+          autoconf --version | head -1
+          ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
+          [[ "$ver" == "2.71" ]] || { echo "Expected autoconf 2.71, got $ver"; exit 1; }
+          echo "autoconf $ver confirmed"
+          [[ -f "$AC_PREFIX/share/autoconf/autoconf/autoconf.m4" ]] || \
+            { echo "autoconf macro library not found under $AC_PREFIX"; exit 1; }
+          echo "macro library present"
       # ── Android SDK + NDK ────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3

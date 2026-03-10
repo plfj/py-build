@@ -558,26 +558,33 @@ termux_step_pre_configure() {
     fi
 
     # -- §14.9  Regenerate configure after patching configure.ac -------------
-    # The patches modify configure.ac, so autoreconf must be run to regenerate
-    # the configure script. CPython 3.13 requires exactly autoconf 2.71
-    # (AC_PREREQ([2.71]) in configure.ac). The workflow installs 2.71 from
-    # source to /usr/local so its compiled-in data path (/usr/local/share/autoconf)
-    # is always present and autoconf can find its own M4 macro library.
+    # The patches modify configure.ac so autoreconf must regenerate configure.
+    # CPython 3.13's configure.ac has AC_PREREQ([2.71]) — autoconf rejects
+    # itself if the running version differs. The workflow builds 2.71 from
+    # source into $RUNNER_TOOL_CACHE/autoconf-2.71 and prepends that prefix to
+    # PATH so it wins over Homebrew 2.72 and any system autoconf.
+    # AUTOCONF_DATADIR is also exported pointing to that same prefix so autoconf
+    # can locate its own M4 macro library (fixes "possibly undefined macro" errors).
     cd "$TERMUX_PKG_SRCDIR"
-    if command -v autoreconf &>/dev/null; then
-        # Verify the version is exactly 2.71 — a different version will either
-        # be rejected by AC_PREREQ or silently produce a broken configure.
-        local _ac_ver
-        _ac_ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-        if [[ "$_ac_ver" != "2.71" ]]; then
-            _die "autoconf 2.71 required (AC_PREREQ in configure.ac), found: $_ac_ver"
-        fi
-        _info "Running autoreconf -fi (autoconf ${_ac_ver}) ..."
-        autoreconf -fi
-        _ok "autoreconf complete."
-    else
-        _die "autoreconf not found. Install autoconf 2.71 and retry."
+    # Use explicit binary paths from env if the workflow exported them.
+    # This prevents autoreconf from accidentally invoking a different autoconf
+    # (e.g. Homebrew 2.72 at /usr/local/bin) when multiple versions are on PATH.
+    local _autoconf_bin="${AUTOCONF:-autoconf}"
+    local _autoreconf_bin="${AUTORECONF:-autoreconf}"
+    if ! command -v "$_autoreconf_bin" &>/dev/null; then
+        _die "autoreconf not found (tried: $_autoreconf_bin). Install autoconf 2.71."
     fi
+    local _ac_ver
+    _ac_ver="$("$_autoconf_bin" --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
+    if [[ "$_ac_ver" != "2.71" ]]; then
+        _die "autoconf 2.71 required (AC_PREREQ([2.71]) in configure.ac), found: ${_ac_ver}." \
+             "Set AUTOCONF env var to the full path of the 2.71 binary."
+    fi
+    _info "Running autoreconf -fi (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
+    # Pass AUTOCONF explicitly so autoreconf's internal invocations also use 2.71.
+    AUTOCONF="$_autoconf_bin" AUTOHEADER="${AUTOHEADER:-autoheader}" \
+    AUTOM4TE="${AUTOM4TE:-autom4te}"  "$_autoreconf_bin" -fi
+    _ok "autoreconf complete."
 }
 
 # =============================================================================
