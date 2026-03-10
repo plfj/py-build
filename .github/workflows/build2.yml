@@ -52,20 +52,19 @@ jobs:
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
-      # ── Autoconf 2.71 ────────────────────────────────────────────────────────
-      # Install via Homebrew — it wires up all m4 macro paths correctly.
-      # Building from source and installing to $HOME/.local causes autoreconf
-      # to fail with "possibly undefined macro: AC_MSG_ERROR / AC_DEFINE / AS_CASE"
-      # because autoconf cannot locate its own macro library at the non-standard
-      # prefix even when AUTOCONF_DATADIR / M4PATH are exported. Homebrew's
-      # autoconf formula installs to /opt/homebrew and all paths are correct.
-      - name: Install Autoconf 2.71
+      # ── Autoconf (Homebrew) ──────────────────────────────────────────────────
+      # Homebrew's autoconf (currently 2.72) is used instead of building from
+      # source. Building from source into $HOME/.local causes autoreconf to fail
+      # with "possibly undefined macro" errors because the binary's macro data
+      # directory is compiled-in at build time as an absolute path — exporting
+      # AUTOCONF_DATADIR or M4PATH cannot override a compiled-in path.
+      # Homebrew installs to /opt/homebrew with all paths correctly wired.
+      # autoconf is keg-only so its bin dir must be added to PATH explicitly.
+      - name: Install Autoconf
         run: |
           set -euo pipefail
-          brew install --quiet autoconf@2.71 || brew install --quiet autoconf
-          # Ensure the Homebrew autoconf is first on PATH.
-          # autoconf@2.71 is keg-only so its bin dir is not linked by default.
-          AC_BIN="$(brew --prefix autoconf@2.71 2>/dev/null || brew --prefix autoconf)/bin"
+          brew install --quiet autoconf
+          AC_BIN="$(brew --prefix autoconf)/bin"
           echo "$AC_BIN" >> "$GITHUB_PATH"
           echo "✅ autoconf installed: $AC_BIN"
 
