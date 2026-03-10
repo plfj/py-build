@@ -9,118 +9,189 @@ jobs:
   build:
     runs-on: macos-14
     env:
-      ANDROID_HOME: ${{ github.workspace }}/android-sdk
-      PREFIX: ${{ github.workspace }}/prefix
-      ANDROID_SDK_VERSION: 35
-      ANDROID_BUILD_TOOLS: 35.0.0
-      ANDROID_NDK_VERSION: 27.3.13750724
-      TERMUX_ARCH: arm64
-      TERMUX_PKG_API_LEVEL: 35
+      ANDROID_HOME:         ${{ github.workspace }}/android-sdk
+      PREFIX:               ${{ github.workspace }}/prefix
+      ANDROID_SDK_VERSION:  "35"
+      ANDROID_BUILD_TOOLS:  "35.0.0"
+      ANDROID_NDK_VERSION:  "27.3.13750724"
+      ANDROID_TARGET_ARCH:  "aarch64-linux-android"
+      ANDROID_API_LEVEL:    "35"
+      TERMUX_ARCH:          "arm64"
+      TERMUX_PKG_API_LEVEL: "35"
 
     steps:
-      - name: Checkout Repository
+      # ── Checkout ─────────────────────────────────────────────────────────────
+      - name: Checkout repository
         uses: actions/checkout@v6
 
-      - name: Install dependencies
+      # ── Host tools ───────────────────────────────────────────────────────────
+      - name: Install host dependencies
         run: |
-          brew update
-          brew upgrade
-          brew install wget curl git unzip make pkg-config automake libtool m4 coreutils gawk xz openssl sqlite readline zlib libffi
-          brew install automake libtool m4
-          export PATH="/opt/homebrew/opt/automake/bin:$PATH"
-          export PATH="/opt/homebrew/opt/libtool/bin:$PATH"
-          export PATH="/opt/homebrew/opt/m4/bin:$PATH"
-          echo "/opt/homebrew/opt/coreutils/libexec/gnubin" >> $GITHUB_PATH || true
-          xcode-select --install || echo "Xcode CLI tools already installed"
+          set -euo pipefail
 
+          brew install --quiet \
+            wget curl git unzip make pkg-config \
+            automake libtool m4 \
+            coreutils gawk xz \
+            openssl sqlite readline zlib libffi
+
+          # Persist GNU tool prefixes for all subsequent steps
+          {
+            echo "/opt/homebrew/opt/automake/bin"
+            echo "/opt/homebrew/opt/libtool/bin"
+            echo "/opt/homebrew/opt/m4/bin"
+            # GNU coreutils shadow macOS built-ins (needed for cross-build scripts)
+            echo "/opt/homebrew/opt/coreutils/libexec/gnubin"
+            echo "/opt/homebrew/opt/openssl/bin"
+          } >> "$GITHUB_PATH"
+
+          # Export pkg-config paths so autoconf/configure can find Homebrew libs
+          {
+            echo "PKG_CONFIG_PATH=/opt/homebrew/opt/openssl/lib/pkgconfig:/opt/homebrew/opt/readline/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig:/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/sqlite/lib/pkgconfig"
+            echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
+            echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
+          } >> "$GITHUB_ENV"
+
+      # ── Autoconf 2.71 (pinned — avoids macOS system autoconf 2.69 bugs) ──────
       - name: Install Autoconf 2.71
         run: |
-          which autoconf
-          curl -O https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz
+          set -euo pipefail
+          # Use -fsSL for silent, follow-redirect, fail-on-error download
+          curl -fsSL https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz \
+            -o autoconf-2.71.tar.gz
+          # Sanity-check before extracting
+          file autoconf-2.71.tar.gz | grep -q "gzip compressed" || \
+            { echo "❌ autoconf tarball looks corrupt"; exit 1; }
           tar xf autoconf-2.71.tar.gz
           cd autoconf-2.71
-          ./configure --prefix=$HOME/.local
-          make -j$(sysctl -n hw.logicalcpu)
+          ./configure --prefix="$HOME/.local"
+          make -j"$(sysctl -n hw.logicalcpu)"
           make install
-          export PATH="$HOME/.local/bin:$PATH"
-          autoconf --version
-      - name: Download Android command line tools
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify Autoconf version
+        run: autoconf --version | head -1
+
+      # ── Android SDK + NDK ────────────────────────────────────────────────────
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
         run: |
           set -euxo pipefail
           mkdir -p "$ANDROID_HOME"
-          cd "$ANDROID_HOME"
-
-          wget https://dl.google.com/android/repository/commandlinetools-mac-9477386_latest.zip -O tools.zip
-          unzip -q tools.zip
-          rm tools.zip
-
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools/* cmdline-tools/latest/ 2>/dev/null || true
-
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH
-
-      - name: Accept SDK licenses
-        run: |
-          yes | sdkmanager --sdk_root="$ANDROID_HOME" --licenses
-
-      - name: Install Android NDK
-        run: |
-          set -euxo pipefail
-          sdkmanager --sdk_root="$ANDROID_HOME" \
+          sdkmanager --install \
             "platform-tools" \
             "platforms;android-${ANDROID_SDK_VERSION}" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
             "ndk;${ANDROID_NDK_VERSION}"
-
-          echo "✅ Android NDK ${ANDROID_NDK_VERSION} installed."
+          echo "✅ Installed NDK ${ANDROID_NDK_VERSION}"
           ls -1 "$ANDROID_HOME/ndk/"
 
-      - name: Set environment to use SDK/NDK Clang
+      # ── Cross-compiler environment ───────────────────────────────────────────
+      - name: Configure NDK cross-compilation environment
         run: |
-          set -euxo pipefail
+          set -euo pipefail
 
           NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          PREBUILT="$NDK_PATH/toolchains/llvm/prebuilt"
 
-          if [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-x86_64" ]; then
-            TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/darwin-x86_64"
-          elif [ -d "$NDK_PATH/toolchains/llvm/prebuilt/darwin-arm64" ]; then
-            TOOLCHAIN="$NDK_PATH/toolchains/llvm/prebuilt/darwin-arm64"
+          echo "=== Available prebuilt toolchains ==="
+          ls "$PREBUILT"
+
+          # NDK 27 ships ONLY darwin-x86_64 host binaries.
+          # On macos-14 (Apple Silicon) they run via Rosetta 2 transparently.
+          # Never branch on uname -m here — darwin-arm64 does not exist in NDK 27
+          # and selecting it would cause "C compiler cannot create executables" (exit 77).
+          if   [ -d "$PREBUILT/darwin-x86_64" ]; then
+            TOOLCHAIN="$PREBUILT/darwin-x86_64"
+          elif [ -d "$PREBUILT/darwin-arm64"  ]; then
+            TOOLCHAIN="$PREBUILT/darwin-arm64"
           else
-            echo "⚠️ NDK toolchain not found; using system clang"
-            TOOLCHAIN="/usr"
+            echo "❌ No NDK toolchain found under $PREBUILT"; exit 1
           fi
 
-          echo "$TOOLCHAIN/bin" >> $GITHUB_PATH
-          ls $TOOLCHAIN/bin
+          SYSROOT="$TOOLCHAIN/sysroot"
+          TARGET="${ANDROID_TARGET_ARCH}${ANDROID_API_LEVEL}"   # aarch64-linux-android35
+          CC_BIN="$TOOLCHAIN/bin/${TARGET}-clang"
+          CXX_BIN="$TOOLCHAIN/bin/${TARGET}-clang++"
 
-          if [ -x "$TOOLCHAIN/bin/aarch64-linux-android35-clang" ]; then
-            echo "CC=$TOOLCHAIN/bin/aarch64-linux-android35-clang" >> $GITHUB_ENV
-            echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android35-clang++" >> $GITHUB_ENV
-          else
-            echo "CC=$(command -v clang)" >> $GITHUB_ENV
-            echo "CXX=$(command -v clang++)" >> $GITHUB_ENV
-          fi
+          echo "TOOLCHAIN : $TOOLCHAIN"
+          echo "SYSROOT   : $SYSROOT"
+          echo "TARGET    : $TARGET"
+          echo "CC        : $CC_BIN"
 
-          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> $GITHUB_ENV
-          echo "LD=$TOOLCHAIN/bin/ld.lld" >> $GITHUB_ENV
-          echo "NM=$TOOLCHAIN/bin/llvm-nm" >> $GITHUB_ENV
-          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> $GITHUB_ENV
+          [ -x "$CC_BIN"  ] || { echo "❌ CC not found:  $CC_BIN";  ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          [ -x "$CXX_BIN" ] || { echo "❌ CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
-          echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-          echo "✅ Using Clang from SDK/NDK"
+          echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
 
-      - name: Prepare prefix
+          # --sysroot + -target are required so configure test programs can link
+          # against Android's libc. Without them the compiler invocation succeeds
+          # but linking fails silently → exit-77 "cannot create executables".
+          CROSS_CFLAGS="--sysroot=$SYSROOT -target $TARGET"
+
+          {
+            echo "CC=$CC_BIN"
+            echo "CXX=$CXX_BIN"
+            echo "AR=$TOOLCHAIN/bin/llvm-ar"
+            echo "AS=$TOOLCHAIN/bin/llvm-as"
+            echo "LD=$TOOLCHAIN/bin/ld.lld"
+            echo "NM=$TOOLCHAIN/bin/llvm-nm"
+            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
+            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
+            echo "OBJDUMP=$TOOLCHAIN/bin/llvm-objdump"
+            echo "SYSROOT=$SYSROOT"
+            echo "ANDROID_NDK_HOME=$NDK_PATH"
+            echo "CFLAGS=$CROSS_CFLAGS"
+            echo "CXXFLAGS=$CROSS_CFLAGS"
+            echo "LDFLAGS=--sysroot=$SYSROOT -fuse-ld=lld"
+            # Expose the full triple for build.sh / configure --host=
+            echo "ANDROID_BUILD_TARGET=$TARGET"
+          } >> "$GITHUB_ENV"
+
+          echo "✅ NDK cross-compilation environment ready"
+
+      # ── Smoke-test the cross-compiler before spending time on the real build ─
+      - name: Verify cross-compiler
+        run: |
+          set -euo pipefail
+          echo "--- CC version ---"
+          "$CC" --version
+          echo "--- CXX version ---"
+          "$CXX" --version
+          echo "--- Smoke test: compile + link trivial C for Android ---"
+          echo 'int main(void){return 0;}' > /tmp/_cross_test.c
+          "$CC" $CFLAGS /tmp/_cross_test.c -o /tmp/_cross_test \
+            && echo "✅ Cross-compile smoke test passed" \
+            || { echo "❌ Cross-compile smoke test FAILED"; exit 1; }
+
+      # ── Build ────────────────────────────────────────────────────────────────
+      - name: Prepare output prefix
         run: mkdir -p "$PREFIX"
 
-      - name: Make build script executable
-        run: chmod +x build.sh
-
-      - name: Build Python
+      - name: Build Python for Android
         run: |
-          export PREFIX="$PREFIX"
-          autoconf --version
+          set -euo pipefail
+          chmod +x build.sh
           ./build.sh
 
-      - name: Show result
+      # ── Post-build ───────────────────────────────────────────────────────────
+      - name: Show build output
+        if: always()
         run: |
-          ls -lh "$PREFIX/bin" || true
+          echo "=== $PREFIX/bin ==="
+          ls -lh "$PREFIX/bin"  2>/dev/null || echo "(empty or missing)"
+          echo "=== $PREFIX/lib ==="
+          ls -lh "$PREFIX/lib"  2>/dev/null || echo "(empty or missing)"
+          echo "=== $PREFIX/include ==="
+          ls -lh "$PREFIX/include" 2>/dev/null || echo "(empty or missing)"
+
+      - name: Upload build artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-android-arm64
+          path: ${{ env.PREFIX }}
+          if-no-files-found: error
+          retention-days: 7
