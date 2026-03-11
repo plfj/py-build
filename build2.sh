@@ -154,6 +154,11 @@ _sha256() {
 
 _download() {
     local url="$1" dest="$2" expected="$3"
+    # Declare tmp before any early return so the trap never fires on an
+    # unbound variable (set -u would error if trap fires before assignment).
+    local tmp="${dest}.tmp.$$"
+    trap 'rm -f "$tmp"' RETURN INT TERM
+
     mkdir -p "$(dirname "$dest")"
     if [[ -f "$dest" ]]; then
         local actual; actual="$(_sha256 "$dest")"
@@ -164,8 +169,6 @@ _download() {
         rm -f "$dest"
     fi
     _info "Downloading: $(basename "$dest")"
-    local tmp="${dest}.tmp.$$"
-    trap 'rm -f "$tmp"' RETURN INT TERM
     if command -v curl &>/dev/null; then
         curl -fL --retry 5 --retry-delay 2 --connect-timeout 30 \
              --progress-bar -o "$tmp" "$url" || _die "curl failed: $url"
@@ -271,7 +274,7 @@ _run_autoreconf() {
 
     local _ac_ver
     _ac_ver="$("$_autoconf_bin" --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-    _info "Running autoreconf -fi -I m4 (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
+    _info "Running autoreconf -fi (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
 
     # Derive the real bin directory from the resolved absolute path.
     # Using 'command -v' guarantees we get an absolute path even when the
@@ -283,16 +286,11 @@ _run_autoreconf() {
     local _ac_datadir="${AUTOCONF_DATADIR:-${_ac_prefix}/share/autoconf}"
     local _aclocal_dir="${_ac_prefix}/share/aclocal"
 
-    # -I must be an absolute path; 'm4' as a relative path fails when the
-    # working directory doesn't happen to contain that subdirectory at call time.
-    local _m4_dir="${SRCDIR}/m4"
-    [[ -d "$_m4_dir" ]] || _warn "No m4/ directory in source tree — autoreconf may fail"
-
     AUTOCONF="${_autoconf_bin}" \
     AUTOHEADER="${AUTOHEADER:-${_ac_bindir}/autoheader}" \
     AUTOM4TE="${AUTOM4TE:-${_ac_bindir}/autom4te}" \
     ACLOCAL_PATH="${_aclocal_dir}" \
-        "$_autoreconf_bin" -fi -I "${_m4_dir}"
+        "$_autoreconf_bin" -fi
 
     _ok "autoreconf complete (autoconf ${_ac_ver})."
 }
