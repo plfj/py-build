@@ -537,7 +537,7 @@ main() {
 
     _section "Step 3/10 — Download Patched Source"
     mkdir -p "$TERMUX_PKG_CACHEDIR" "$TERMUX_PKG_SRCDIR"
-    _download "$_OPT_SOURCE_URL" \
+    _download "https://github.com/plfj/py-build/releases/download/v3.13.12-r3-dev/python-3.13.12-patched-src.tar.xz" \
         "${TERMUX_PKG_CACHEDIR}/${_PATCHED_TARBALL}"
 
     _section "Step 4/10 — Unpack Patched Source"
