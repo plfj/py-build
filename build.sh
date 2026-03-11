@@ -26,7 +26,10 @@
 #
 # Output: $TERMUX_PREFIX tree (populated), plus a .deb at $OUTPUT_DIR
 # =============================================================================
-set -euo pipefail
+#set -euo pipefail
+#
+#set -eux
+set -euxo pipefail
 
 # =============================================================================
 # §0  SCRIPT IDENTITY
