@@ -260,30 +260,39 @@ _apply_patches() {
 _run_autoreconf() {
     cd "$SRCDIR"
 
-    local _autoconf_bin="${AUTOCONF:-autoconf}"
-    local _autoreconf_bin="${AUTORECONF:-autoreconf}"
+    # Resolve binaries — prefer explicit env vars (set by CI when using a
+    # custom-built autoconf), fall back to PATH lookup.
+    local _autoconf_bin _autoreconf_bin
+    _autoconf_bin="${AUTOCONF:-$(command -v autoconf)}"
+    _autoreconf_bin="${AUTORECONF:-$(command -v autoreconf)}"
 
-    command -v "$_autoreconf_bin" &>/dev/null \
-        || _die "autoreconf not found (tried: $_autoreconf_bin)"
+    [[ -x "$_autoconf_bin"   ]] || _die "autoconf not found (tried: $_autoconf_bin)"
+    [[ -x "$_autoreconf_bin" ]] || _die "autoreconf not found (tried: $_autoreconf_bin)"
 
     local _ac_ver
     _ac_ver="$("$_autoconf_bin" --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-    _info "Running autoreconf -fi -I m4 (autoconf ${_ac_ver}) ..."
-    # When running inside ghcr.io/python/autoconf the environment is already
-    # correctly configured — no extra env vars are needed.
-    # When running locally with AUTOCONF set to a custom prefix, pin all
-    # related binaries so no subprocess resolves a different version from PATH.
-    local _ac_prefix="${_autoconf_bin%/bin/autoconf}"
+    _info "Running autoreconf -fi -I m4 (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
+
+    # Derive the real bin directory from the resolved absolute path.
+    # Using 'command -v' guarantees we get an absolute path even when the
+    # binary is on PATH as a bare name (as it is inside the CPython container).
+    local _ac_bindir
+    _ac_bindir="$(dirname "$(command -v "$_autoconf_bin")")"
+    local _ac_prefix="${_ac_bindir%/bin}"
+
     local _ac_datadir="${AUTOCONF_DATADIR:-${_ac_prefix}/share/autoconf}"
     local _aclocal_dir="${_ac_prefix}/share/aclocal"
 
-    M4PATH="${_ac_datadir}:${_aclocal_dir}" \
-    AUTOCONF_DATADIR="${_ac_datadir}" \
-    ACLOCAL_PATH="${_aclocal_dir}" \
+    # -I must be an absolute path; 'm4' as a relative path fails when the
+    # working directory doesn't happen to contain that subdirectory at call time.
+    local _m4_dir="${SRCDIR}/m4"
+    [[ -d "$_m4_dir" ]] || _warn "No m4/ directory in source tree — autoreconf may fail"
+
     AUTOCONF="${_autoconf_bin}" \
-    AUTOHEADER="${AUTOHEADER:-${_ac_prefix}/bin/autoheader}" \
-    AUTOM4TE="${AUTOM4TE:-${_ac_prefix}/bin/autom4te}" \
-        "$_autoreconf_bin" -fi -I m4
+    AUTOHEADER="${AUTOHEADER:-${_ac_bindir}/autoheader}" \
+    AUTOM4TE="${AUTOM4TE:-${_ac_bindir}/autom4te}" \
+    ACLOCAL_PATH="${_aclocal_dir}" \
+        "$_autoreconf_bin" -fi -I "${_m4_dir}"
 
     _ok "autoreconf complete (autoconf ${_ac_ver})."
 }
