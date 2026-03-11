@@ -115,6 +115,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install host dependencies
+        shell: bash
         run: |
           set -euo pipefail
           brew install --quiet \
@@ -130,7 +131,6 @@ jobs:
             echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
-        shell: bash
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -146,6 +146,7 @@ jobs:
           ls -1 "$ANDROID_HOME/ndk/"
 
       - name: Configure NDK cross-compilation environment
+        shell: bash
         run: |
           set -euo pipefail
           NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
@@ -184,7 +185,6 @@ jobs:
             echo "ANDROID_BUILD_TARGET=$TARGET"
             echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
           } >> "$GITHUB_ENV"
-        shell: bash
 
       - name: Verify cross-compiler
         run: |
@@ -204,6 +204,7 @@ jobs:
       # we construct the URL from the known tag + filename instead, which is
       # stable and requires no JSON parsing across jobs.
       - name: Build Python for Android
+        shell: bash
         env:
           PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
           OUTPUT_DIR:         ${{ github.workspace }}/dist
@@ -212,14 +213,13 @@ jobs:
           mkdir -p dist
           chmod +x build.sh
           ./build.sh
-        shell: bash
 
       - name: Show build output
+        shell: bash
         if: always()
         run: |
           echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
           echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
-        shell: bash
 
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
