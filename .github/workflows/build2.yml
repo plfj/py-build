@@ -46,7 +46,6 @@ jobs:
 
       - name: Verify autoconf version
         run: |
-          set -euo pipefail
           autoconf --version | head -1
           autoreconf --version | head -1
           which autoconf
@@ -54,7 +53,6 @@ jobs:
 
       - name: Prepare and pack patched source
         run: |
-          set -euo pipefail
           chmod +x prepare-source.sh
           OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" \
           TERMUX_PKG_API_LEVEL="${ANDROID_API_LEVEL}" \
