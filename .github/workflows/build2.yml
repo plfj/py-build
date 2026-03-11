@@ -115,7 +115,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install host dependencies
-        shell: bash
         run: |
           set -euo pipefail
           brew install --quiet \
@@ -131,6 +130,7 @@ jobs:
             echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -146,7 +146,6 @@ jobs:
           ls -1 "$ANDROID_HOME/ndk/"
 
       - name: Configure NDK cross-compilation environment
-        shell: bash
         run: |
           set -euo pipefail
           NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
@@ -194,7 +193,6 @@ jobs:
           "$CC" $CFLAGS /tmp/_cross_test.c -o /tmp/_cross_test \
             && echo "Cross-compile smoke test passed" \
             || { echo "Cross-compile smoke test FAILED"; exit 1; }
-        shell: bash
 
       - name: Prepare output prefix
         run: mkdir -p "$PREFIX"
@@ -204,18 +202,16 @@ jobs:
       # we construct the URL from the known tag + filename instead, which is
       # stable and requires no JSON parsing across jobs.
       - name: Build Python for Android
-        shell: bash
         env:
           PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
           OUTPUT_DIR:         ${{ github.workspace }}/dist
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           mkdir -p dist
           chmod +x build.sh
           ./build.sh
 
       - name: Show build output
-        shell: bash
         if: always()
         run: |
           echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
@@ -224,7 +220,7 @@ jobs:
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "frt"
+          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
           files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
