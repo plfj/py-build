@@ -3,102 +3,143 @@ name: Build Python for Android
 on:
   workflow_dispatch:
   push:
+    tags:
+      - 'v*'
     branches: [ master ]
 
+env:
+  PYTHON_VERSION:      "3.13.12"
+  PYTHON_REVISION:     "3"
+  ANDROID_NDK_VERSION: "27.3.13750724"
+  ANDROID_API_LEVEL:   "35"
+  TERMUX_ARCH:         "arm64"
+
 jobs:
-  build:
+  # ===========================================================================
+  # JOB 1 — Apply patches, run autoreconf, pack + upload to GitHub release
+  # ===========================================================================
+  prepare-source:
+    name: Prepare patched source
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/python/autoconf:2024.10.16.11360930377
+      # This is the official CPython autoconf image — it contains the exact
+      # autoconf/automake/aclocal/libtool versions used by CPython release
+      # engineers, so autoreconf -fi -I m4 works correctly on configure.ac.
+
+    outputs:
+      release_id:  ${{ steps.create_release.outputs.id }}
+      upload_url:  ${{ steps.create_release.outputs.upload_url }}
+      release_tag: ${{ steps.release_tag.outputs.tag }}
+      source_url:  ${{ steps.upload_source.outputs.browser_download_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            wget curl git make pkg-config \
+            xz-utils file ca-certificates
+
+      - name: Verify autoconf version
+        run: |
+          set -euo pipefail
+          autoconf --version | head -1
+          autoreconf --version | head -1
+          which autoconf
+          which autoreconf
+
+      - name: Prepare and pack patched source
+        run: |
+          set -euo pipefail
+          chmod +x prepare-source.sh
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" \
+          TERMUX_PKG_API_LEVEL="${ANDROID_API_LEVEL}" \
+            ./build2.sh
+          echo "DIST_DIR=${GITHUB_WORKSPACE}/dist" >> "$GITHUB_ENV"
+
+      - name: Show prepared tarball
+        run: ls -lh "${GITHUB_WORKSPACE}/dist/"
+
+      - name: Compute release tag
+        id: release_tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v${PYTHON_VERSION}-r${PYTHON_REVISION}-dev"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
+
+      - name: Create GitHub release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name:     ${{ steps.release_tag.outputs.tag }}
+          release_name: "Python ${{ env.PYTHON_VERSION }}-r${{ env.PYTHON_REVISION }}"
+          body: |
+            Termux Python ${{ env.PYTHON_VERSION }} revision ${{ env.PYTHON_REVISION }}
+            for Android (API ${{ env.ANDROID_API_LEVEL }}, ${{ env.TERMUX_ARCH }}).
+
+            **Assets:**
+            - `python-*-patched-src.tar.xz` — Patched + autoreconf'd source (input to build job)
+            - `python_*_arm64.deb` — Termux .deb package ready to install
+          draft: false
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      - name: Upload patched source tarball
+        id: upload_source
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url:         ${{ steps.create_release.outputs.upload_url }}
+          asset_path:         ${{ env.DIST_DIR }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+          asset_name:         python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+          asset_content_type: application/x-xz
+  # ===========================================================================
+  # JOB 2 — Download patched source, cross-compile, upload .deb to same release
+  # ===========================================================================
+  build-android:
+    name: Build .deb for Android
     runs-on: macos-14
+    needs: prepare-source
+
     env:
       ANDROID_HOME:         ${{ github.workspace }}/android-sdk
       PREFIX:               ${{ github.workspace }}/prefix
       ANDROID_SDK_VERSION:  "35"
       ANDROID_BUILD_TOOLS:  "35.0.0"
-      ANDROID_NDK_VERSION:  "27.3.13750724"
-      ANDROID_TARGET_ARCH:  "aarch64-linux-android"
-      ANDROID_API_LEVEL:    "35"
-      TERMUX_ARCH:          "arm64"
       TERMUX_PKG_API_LEVEL: "35"
 
     steps:
-      # ── Checkout ─────────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # ── Host tools ───────────────────────────────────────────────────────────
       - name: Install host dependencies
         run: |
           set -euo pipefail
-
           brew install --quiet \
             wget curl git unzip make pkg-config \
-            automake libtool m4 \
             coreutils gawk xz \
             openssl sqlite readline zlib libffi
-
-          # Persist GNU tool prefixes for all subsequent steps
           {
-            echo "/opt/homebrew/opt/automake/bin"
-            echo "/opt/homebrew/opt/libtool/bin"
-            echo "/opt/homebrew/opt/m4/bin"
-            # GNU coreutils shadow macOS built-ins (needed for cross-build scripts)
             echo "/opt/homebrew/opt/coreutils/libexec/gnubin"
             echo "/opt/homebrew/opt/openssl/bin"
           } >> "$GITHUB_PATH"
-
-          # Export pkg-config paths so autoconf/configure can find Homebrew libs
           {
             echo "PKG_CONFIG_PATH=/opt/homebrew/opt/openssl/lib/pkgconfig:/opt/homebrew/opt/readline/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig:/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/sqlite/lib/pkgconfig"
             echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
-      # ── Autoconf 2.71 ────────────────────────────────────────────────────────
-      # CPython 3.13's configure.ac has AC_PREREQ([2.71]). The patches modify
-      # configure.ac so autoreconf must be run with exactly 2.71.
-      # Homebrew only provides 2.72 and /usr/local already has it, so both
-      # shadow our install. Fix: install to a dedicated prefix ($RUNNER_TOOL_CACHE)
-      # and prepend it to PATH via GITHUB_PATH so it wins over everything else.
-      - name: Install Autoconf 2.71
-        run: |
-          set -euo pipefail
-          AC_PREFIX="$RUNNER_TOOL_CACHE/autoconf-2.71"
-          curl -fsSL https://ftp.gnu.org/gnu/autoconf/autoconf-2.71.tar.gz \
-            -o autoconf-2.71.tar.gz
-          file autoconf-2.71.tar.gz | grep -q "gzip compressed" || \
-            { echo "autoconf tarball looks corrupt"; exit 1; }
-          tar xf autoconf-2.71.tar.gz
-          cd autoconf-2.71
-          ./configure --prefix="$AC_PREFIX"
-          make -j"$(sysctl -n hw.logicalcpu)"
-          make install
-          # Prepend to PATH — GITHUB_PATH prepends, so this wins over
-          # /usr/local/bin (2.72) and /opt/homebrew/bin (2.72).
-          echo "$AC_PREFIX/bin" >> "$GITHUB_PATH"
-          # Export the data dir so autoconf finds its own macro library
-          # at the exact prefix it was built with.
-          echo "AUTOCONF_DATADIR=$AC_PREFIX/share/autoconf" >> "$GITHUB_ENV"
-          echo "AC_PREFIX=$AC_PREFIX" >> "$GITHUB_ENV"
-          # Export explicit binary paths so autoreconf (and any subprocess) cannot
-          # accidentally resolve a different autoconf from /usr/local or Homebrew.
-          # autoreconf honours the AUTOCONF env var when invoking autoconf internally.
-          echo "AUTOCONF=$AC_PREFIX/bin/autoconf" >> "$GITHUB_ENV"
-          echo "AUTORECONF=$AC_PREFIX/bin/autoreconf" >> "$GITHUB_ENV"
-          echo "AUTOHEADER=$AC_PREFIX/bin/autoheader" >> "$GITHUB_ENV"
-          echo "AUTOM4TE=$AC_PREFIX/bin/autom4te" >> "$GITHUB_ENV"
-
-      - name: Verify Autoconf 2.71
-        run: |
-          set -euo pipefail
-          which autoconf
-          which autoreconf
-          autoconf --version | head -1
-          ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-          [[ "$ver" == "2.71" ]] || { echo "Expected autoconf 2.71, got $ver"; exit 1; }
-          echo "autoconf $ver confirmed"
-          [[ -f "$AC_PREFIX/share/autoconf/autoconf/autoconf.m4" ]] || \
-            { echo "autoconf macro library not found under $AC_PREFIX"; exit 1; }
-          echo "macro library present"
-      # ── Android SDK + NDK ────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -111,52 +152,29 @@ jobs:
             "platforms;android-${ANDROID_SDK_VERSION}" \
             "build-tools;${ANDROID_BUILD_TOOLS}" \
             "ndk;${ANDROID_NDK_VERSION}"
-          echo "✅ Installed NDK ${ANDROID_NDK_VERSION}"
           ls -1 "$ANDROID_HOME/ndk/"
 
-      # ── Cross-compiler environment ───────────────────────────────────────────
       - name: Configure NDK cross-compilation environment
         run: |
           set -euo pipefail
-
           NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
           PREBUILT="$NDK_PATH/toolchains/llvm/prebuilt"
+          echo "=== Available prebuilt toolchains ===" && ls "$PREBUILT"
 
-          echo "=== Available prebuilt toolchains ==="
-          ls "$PREBUILT"
-
-          # NDK 27 ships ONLY darwin-x86_64 host binaries.
-          # On macos-14 (Apple Silicon) they run via Rosetta 2 transparently.
-          # Never branch on uname -m here — darwin-arm64 does not exist in NDK 27
-          # and selecting it would cause "C compiler cannot create executables" (exit 77).
-          if   [ -d "$PREBUILT/darwin-x86_64" ]; then
-            TOOLCHAIN="$PREBUILT/darwin-x86_64"
-          elif [ -d "$PREBUILT/darwin-arm64"  ]; then
-            TOOLCHAIN="$PREBUILT/darwin-arm64"
-          else
-            echo "❌ No NDK toolchain found under $PREBUILT"; exit 1
-          fi
+          # NDK 27 ships ONLY darwin-x86_64; runs via Rosetta 2 on Apple Silicon.
+          if   [ -d "$PREBUILT/darwin-x86_64" ]; then TOOLCHAIN="$PREBUILT/darwin-x86_64"
+          elif [ -d "$PREBUILT/darwin-arm64"  ]; then TOOLCHAIN="$PREBUILT/darwin-arm64"
+          else echo "No NDK toolchain found under $PREBUILT"; exit 1; fi
 
           SYSROOT="$TOOLCHAIN/sysroot"
-          TARGET="${ANDROID_TARGET_ARCH}${ANDROID_API_LEVEL}"   # aarch64-linux-android35
+          TARGET="aarch64-linux-android${ANDROID_API_LEVEL}"
           CC_BIN="$TOOLCHAIN/bin/${TARGET}-clang"
           CXX_BIN="$TOOLCHAIN/bin/${TARGET}-clang++"
 
-          echo "TOOLCHAIN : $TOOLCHAIN"
-          echo "SYSROOT   : $SYSROOT"
-          echo "TARGET    : $TARGET"
-          echo "CC        : $CC_BIN"
-
-          [ -x "$CC_BIN"  ] || { echo "❌ CC not found:  $CC_BIN";  ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
-          [ -x "$CXX_BIN" ] || { echo "❌ CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          [ -x "$CC_BIN"  ] || { echo "CC not found: $CC_BIN";  ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          [ -x "$CXX_BIN" ] || { echo "CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
           echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
-
-          # --sysroot + -target are required so configure test programs can link
-          # against Android's libc. Without them the compiler invocation succeeds
-          # but linking fails silently → exit-77 "cannot create executables".
-          CROSS_CFLAGS="--sysroot=$SYSROOT -target $TARGET"
-
           {
             echo "CC=$CC_BIN"
             echo "CXX=$CXX_BIN"
@@ -169,60 +187,55 @@ jobs:
             echo "OBJDUMP=$TOOLCHAIN/bin/llvm-objdump"
             echo "SYSROOT=$SYSROOT"
             echo "ANDROID_NDK_HOME=$NDK_PATH"
-            echo "CFLAGS=$CROSS_CFLAGS"
-            echo "CXXFLAGS=$CROSS_CFLAGS"
+            echo "CFLAGS=--sysroot=$SYSROOT -target $TARGET"
+            echo "CXXFLAGS=--sysroot=$SYSROOT -target $TARGET"
             echo "LDFLAGS=--sysroot=$SYSROOT -fuse-ld=lld"
-            # Expose the full triple for build.sh / configure --host=
             echo "ANDROID_BUILD_TARGET=$TARGET"
-            # TERMUX_STANDALONE_TOOLCHAIN: used by build.sh to derive sysroot
-            # include/lib paths. Must point to the NDK toolchain, NOT to PREFIX.
-            # build.sh defaults this to TERMUX_PREFIX which is the output dir —
-            # completely wrong for a cross-compile; the NDK toolchain is correct.
             echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
           } >> "$GITHUB_ENV"
 
-          echo "✅ NDK cross-compilation environment ready"
-
-      # ── Smoke-test the cross-compiler before spending time on the real build ─
       - name: Verify cross-compiler
         run: |
           set -euo pipefail
-          echo "--- CC version ---"
           "$CC" --version
-          echo "--- CXX version ---"
-          "$CXX" --version
-          echo "--- Smoke test: compile + link trivial C for Android ---"
           echo 'int main(void){return 0;}' > /tmp/_cross_test.c
           "$CC" $CFLAGS /tmp/_cross_test.c -o /tmp/_cross_test \
-            && echo "✅ Cross-compile smoke test passed" \
-            || { echo "❌ Cross-compile smoke test FAILED"; exit 1; }
+            && echo "Cross-compile smoke test passed" \
+            || { echo "Cross-compile smoke test FAILED"; exit 1; }
 
-      # ── Build ────────────────────────────────────────────────────────────────
       - name: Prepare output prefix
         run: mkdir -p "$PREFIX"
 
       - name: Build Python for Android
+        env:
+          PATCHED_SOURCE_URL: ${{ needs.prepare-source.outputs.source_url }}
+          OUTPUT_DIR:         ${{ github.workspace }}/dist
         run: |
           set -euo pipefail
+          mkdir -p dist
           chmod +x build.sh
           ./build.sh
 
-      # ── Post-build ───────────────────────────────────────────────────────────
       - name: Show build output
         if: always()
         run: |
-          echo "=== $PREFIX/bin ==="
-          ls -lh "$PREFIX/bin"  2>/dev/null || echo "(empty or missing)"
-          echo "=== $PREFIX/lib ==="
-          ls -lh "$PREFIX/lib"  2>/dev/null || echo "(empty or missing)"
-          echo "=== $PREFIX/include ==="
-          ls -lh "$PREFIX/include" 2>/dev/null || echo "(empty or missing)"
+          echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
+          echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
 
-      - name: Upload build artifacts
-        if: success()
-        uses: actions/upload-artifact@v4
+      - name: Find .deb file
+        id: find_deb
+        run: |
+          debfile="$(ls dist/python_*.deb 2>/dev/null | head -1)"
+          [[ -f "$debfile" ]] || { echo "No .deb found in dist/"; exit 1; }
+          echo "path=$debfile"               >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$debfile")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload .deb to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          name: python-android-arm64
-          path: ${{ env.PREFIX }}
-          if-no-files-found: error
-          retention-days: 7
+          upload_url:         ${{ needs.prepare-source.outputs.upload_url }}
+          asset_path:         ${{ steps.find_deb.outputs.path }}
+          asset_name:         ${{ steps.find_deb.outputs.name }}
+          asset_content_type: application/vnd.debian.binary-package
