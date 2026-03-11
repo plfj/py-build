@@ -39,7 +39,6 @@ jobs:
 
       - name: Install host dependencies
         run: |
-          set -euo pipefail
           apt-get update -qq
           apt-get install -y --no-install-recommends \
             wget curl git make pkg-config \
