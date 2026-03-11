@@ -208,8 +208,8 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          chmod +x build.sh
-          ./build.sh
+          chmod +x build2.sh
+          ./build2.sh
 
       - name: Show build output
         if: always()

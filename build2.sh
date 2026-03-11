@@ -1,415 +1,224 @@
-#!/usr/bin/env bash
-# =============================================================================
-# Termux Python 3.13.12 — prepare-source.sh
-# =============================================================================
-# PART 1 OF 2: Download CPython + debpython, apply all Termux patches,
-# run autoreconf -fi to regenerate the configure script from the patched
-# configure.ac, then pack the result into a ready-to-configure tarball
-# (python-3.13.12-patched-src.tar.xz) for upload to the GitHub release.
-#
-# Usage:
-#   bash prepare-source.sh [--clean] [--skip-verify] [--jobs N]
-#
-# Requires: autoconf 2.71, automake, m4, patch, curl/wget, tar
-# Output  : python-3.13.12-patched-src.tar.xz   (in $OUTPUT_DIR)
-#
-# Patch files must be present in a patches/ directory alongside this script.
-# =============================================================================
-set -euo pipefail
+name: Build Python for Android
 
-# =============================================================================
-# §0  SCRIPT IDENTITY
-# =============================================================================
-_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly _SCRIPT_DIR
-readonly _PATCH_DIR="${_SCRIPT_DIR}/patches"
-tmp=""
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+    branches: [ master ]
 
-# =============================================================================
-# §1  PACKAGE CONSTANTS
-# =============================================================================
-readonly TERMUX_PKG_VERSION="3.13.12"
-readonly TERMUX_PKG_REVISION=3
-readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"   # -> "3.13"
-readonly _DEBPYTHON_COMMIT="f358ab52bf2932ad55b1a72a29c9762169e6ac47"
+env:
+  PYTHON_VERSION:      "3.13.12"
+  PYTHON_REVISION:     "3"
+  ANDROID_NDK_VERSION: "27.3.13750724"
+  ANDROID_API_LEVEL:   "35"
+  TERMUX_ARCH:         "arm64"
 
-# =============================================================================
-# §2  SOURCE URLs + SHA256
-# =============================================================================
-readonly _PYTHON_URL="https://www.python.org/ftp/python/${TERMUX_PKG_VERSION}/Python-${TERMUX_PKG_VERSION}.tgz"
-readonly _PYTHON_SHA256="12e7cb170ad2d1a69aee96a1cc7fc8de5b1e97a2bdac51683a3db016ec9a2996"
+jobs:
+  # ===========================================================================
+  # JOB 1 — Apply patches, run autoreconf, pack + upload to GitHub release
+  # ===========================================================================
+  prepare-source:
+    name: Prepare patched source
+    runs-on: ubuntu-24.04
+    container:
+      # Official CPython autoconf image — contains the exact autoconf/automake/
+      # aclocal/libtool versions used by CPython release engineers.
+      image: ghcr.io/python/autoconf:2024.10.16.11360930377
 
-readonly _DEBPYTHON_URL="https://salsa.debian.org/cpython-team/python3-defaults/-/archive/${_DEBPYTHON_COMMIT}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz"
-readonly _DEBPYTHON_SHA256="3b7a76c144d39f5c4a2c7789fd4beb3266980c2e667ad36167e1e7a357c684b0"
+    outputs:
+      release_tag: ${{ steps.release_tag.outputs.tag }}
+      source_url:  ${{ steps.release.outputs.assets && fromJSON(steps.release.outputs.assets)[0].browser_download_url || '' }}
 
-# Output tarball name (also used by build.sh to know what to download)
-readonly _OUTPUT_TARBALL="python-${TERMUX_PKG_VERSION}-patched-src.tar.xz"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-# =============================================================================
-# §3  REQUIRED PATCH FILES (in apply order; 0012 handled separately)
-# =============================================================================
-readonly -a _PATCH_FILES=(
-    "0001-fix-hardcoded-paths.patch"
-    "0002-no-setuid-servers.patch"
-    "0003-ctypes-util-use-llvm-tools.patch"
-    "0004-impl-getprotobyname.patch"
-    "0005-impl-multiprocessing.patch"
-    "0006-disable-multiarch.patch"
-    "0007-do-not-use-link.patch"
-    "0008-fix-pkgconfig-variable-substitution.patch"
-    "0009-fix-ctypes-util-find_library.patch"
-    "0010-do-not-hardlink.patch"
-    "0011-fix-module-linking.patch"
-    "0012-hardcode-android-api-level.diff"
-    "0013-backport-sysconfig-patch-for-32-bit-on-64-bit-arm-kernel.patch"
-    "debpython.patch"
-)
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
+            wget curl git make pkg-config \
+            xz-utils file ca-certificates
 
-# =============================================================================
-# §4  OPTION VARIABLES
-# =============================================================================
-_OPT_CLEAN=false
-_OPT_JOBS=""
-# API level needed only for 0012 substitution
-_OPT_API_LEVEL="${TERMUX_PKG_API_LEVEL:-35}"
-# Where to write the output tarball
-OUTPUT_DIR="${OUTPUT_DIR:-${_SCRIPT_DIR}/dist}"
-mkdir -p "$OUTPUT_DIR"
-# =============================================================================
-# §5  LOGGING
-# =============================================================================
-if [[ -t 2 ]]; then
-    _C_RST='\033[0m'  _C_BLU='\033[1;34m' _C_GRN='\033[1;32m'
-    _C_YLW='\033[1;33m' _C_RED='\033[1;31m' _C_CYN='\033[1;36m'
-else
-    _C_RST='' _C_BLU='' _C_GRN='' _C_YLW='' _C_RED='' _C_CYN=''
-fi
-_info()    { printf "${_C_BLU}[INFO]${_C_RST}   %s\n"  "$*";     }
-_ok()      { printf "${_C_GRN}[ OK ]${_C_RST}   %s\n"  "$*";     }
-_warn()    { printf "${_C_YLW}[WARN]${_C_RST}   %s\n"  "$*" >&2; }
-_error()   { printf "${_C_RED}[ERR ]${_C_RST}   %s\n"  "$*" >&2; }
-_die()     { _error "$*"; exit 1;                                  }
-_section() {
-    local line="══════════════════════════════════════════════════════════════"
-    printf "\n${_C_CYN}%s\n  %s\n%s${_C_RST}\n\n" "$line" "$*" "$line"
-}
+      - name: Verify autoconf version
+        run: |
+          set -euo pipefail
+          autoconf --version | head -1
+          autoreconf --version | head -1
+          which autoconf && which autoreconf
 
-# =============================================================================
-# §6  ARGUMENT PARSING
-# =============================================================================
-_parse_args() {
-    while (( $# > 0 )); do
-        case "$1" in
-            --help|-h)
-                grep '^# ' "$0" | head -20 | sed 's/^# \{0,2\}//'
-                exit 0 ;;
-            --clean)        _OPT_CLEAN=true ;;
-            --api-level)
-                [[ -n "${2:-}" ]] || _die "--api-level requires a numeric argument"
-                _OPT_API_LEVEL="$2"; shift ;;
-            --jobs|-j)
-                [[ -n "${2:-}" ]] || _die "--jobs requires a numeric argument"
-                [[ "$2" =~ ^[1-9][0-9]*$ ]] || _die "--jobs must be a positive integer"
-                _OPT_JOBS="$2"; shift ;;
-            --output-dir)
-                [[ -n "${2:-}" ]] || _die "--output-dir requires a path"
-                OUTPUT_DIR="$2"; shift ;;
-            *) _die "Unknown option: '$1'  (try --help)" ;;
-        esac
-        shift
-    done
-}
+      - name: Prepare and pack patched source
+        run: |
+          set -euo pipefail
+          chmod +x prepare-source.sh
+          OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" \
+          TERMUX_PKG_API_LEVEL="${ANDROID_API_LEVEL}" \
+            ./prepare-source.sh
 
-# =============================================================================
-# §7  ENVIRONMENT SETUP
-# =============================================================================
-_setup_env() {
-    TERMUX_PKG_API_LEVEL="${_OPT_API_LEVEL}"
-    export TERMUX_PKG_API_LEVEL
+      - name: Show prepared tarball
+        run: ls -lh "${GITHUB_WORKSPACE}/dist/"
 
-    WORKDIR="${TMPDIR:-/tmp}/python-prepare"
-    SRCDIR="${WORKDIR}/src"
-    CACHEDIR="${WORKDIR}/cache"
+      - name: Compute release tag
+        id: release_tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            TAG="v${PYTHON_VERSION}-r${PYTHON_REVISION}-dev"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release tag: $TAG"
 
-    if [[ -n "${_OPT_JOBS}" ]]; then
-        JOBS="${_OPT_JOBS}"
-    elif [[ "$(uname)" == "Darwin" ]]; then
-        JOBS="$(sysctl -n hw.ncpu 2>/dev/null || echo 1)"
-    else
-        JOBS="$(nproc 2>/dev/null || echo 1)"
-    fi
-}
+      # softprops/action-gh-release@v2 — creates the release AND uploads assets
+      # in one step. Replaces the deprecated actions/create-release@v1 +
+      # actions/upload-release-asset@v1 combo.
+      - name: Create release and upload patched source tarball
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name:   ${{ steps.release_tag.outputs.tag }}
+          name:       "Python ${{ env.PYTHON_VERSION }}-r${{ env.PYTHON_REVISION }}"
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          body: |
+            Termux Python ${{ env.PYTHON_VERSION }} revision ${{ env.PYTHON_REVISION }}
+            for Android (API ${{ env.ANDROID_API_LEVEL }}, ${{ env.TERMUX_ARCH }}).
 
-# =============================================================================
-# §8  SHA256 + DOWNLOAD
-# =============================================================================
-_sha256() {
-    if command -v sha256sum &>/dev/null; then
-        sha256sum "$1" | awk '{print $1}'
-    elif command -v shasum &>/dev/null; then
-        shasum -a 256 "$1" | awk '{print $1}'
-    else
-        _die "No SHA-256 utility found. Install sha256sum or shasum."
-    fi
-}
+            **Assets:**
+            - `python-*-patched-src.tar.xz` — Patched + autoreconf'd source
+            - `python_*_arm64.deb` — Termux .deb package ready to install
+          files: |
+            dist/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-_download() {
-    local url="$1" dest="$2" expected="$3"
-    # Declare tmp before any early return so the trap never fires on an
-    # unbound variable (set -u would error if trap fires before assignment).
-    local tmp="${dest}.tmp.$$"
-    trap 'rm -f "$tmp"' RETURN INT TERM
+  # ===========================================================================
+  # JOB 2 — Download patched source, cross-compile, upload .deb to same release
+  # ===========================================================================
+  build-android:
+    name: Build .deb for Android
+    runs-on: macos-14
+    needs: prepare-source
 
-    mkdir -p "$(dirname "$dest")"
-    if [[ -f "$dest" ]]; then
-        local actual; actual="$(_sha256 "$dest")"
-        if [[ "$actual" == "$expected" ]]; then
-            _ok "Cache hit: $(basename "$dest")"; return 0
-        fi
-        _warn "SHA256 mismatch on cached file — re-downloading"
-        rm -f "$dest"
-    fi
-    _info "Downloading: $(basename "$dest")"
-    if command -v curl &>/dev/null; then
-        curl -fL --retry 5 --retry-delay 2 --connect-timeout 30 \
-             --progress-bar -o "$tmp" "$url" || _die "curl failed: $url"
-    else
-        wget --tries=5 --timeout=30 -q --show-progress \
-             -O "$tmp" "$url" || _die "wget failed: $url"
-    fi
-    local actual; actual="$(_sha256 "$tmp")"
-    [[ "$actual" == "$expected" ]] || {
-        rm -f "$tmp"
-        _error "SHA256 mismatch: expected=$expected got=$actual"
-        _die "Download integrity check failed."
-    }
-    mv "$tmp" "$dest"
-    _ok "Downloaded: $(basename "$dest")"
-}
+    env:
+      ANDROID_HOME:         ${{ github.workspace }}/android-sdk
+      PREFIX:               ${{ github.workspace }}/prefix
+      ANDROID_SDK_VERSION:  "35"
+      ANDROID_BUILD_TOOLS:  "35.0.0"
+      TERMUX_PKG_API_LEVEL: "35"
 
-# =============================================================================
-# §9  TOOL CHECK
-# =============================================================================
-_check_tools() {
-    _info "Checking required tools ..."
-    local missing=0
-    for t in patch tar m4 automake; do
-        command -v "$t" &>/dev/null || { _error "Missing: $t"; (( missing++ )) || true; }
-    done
-    if ! command -v autoreconf &>/dev/null; then
-        _error "Missing: autoreconf"
-        (( missing++ )) || true
-    fi
-    if ! command -v curl &>/dev/null && ! command -v wget &>/dev/null; then
-        _error "Missing: curl or wget"
-        (( missing++ )) || true
-    fi
-    (( missing > 0 )) && _die "${missing} required tool(s) missing."
-    _ok "All required tools present."
-}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-# =============================================================================
-# §10  PATCH VALIDATION
-# =============================================================================
-_validate_patches() {
-    _info "Validating patch files in: $_PATCH_DIR"
-    local missing=0
-    for f in "${_PATCH_FILES[@]}"; do
-        local p="${_PATCH_DIR}/${f}"
-        [[ -f "$p" ]] || { _error "Missing: patches/${f}"; (( missing++ )) || true; }
-        [[ -s "$p" ]] || { _error "Empty:   patches/${f}"; (( missing++ )) || true; }
-    done
-    (( missing > 0 )) && _die "${missing} patch file(s) missing or empty."
-    _ok "All ${#_PATCH_FILES[@]} patch files present."
-}
+      - name: Install host dependencies
+        run: |
+          set -euo pipefail
+          brew install --quiet \
+            wget curl git unzip make pkg-config \
+            coreutils gawk xz \
+            openssl sqlite readline zlib libffi
+          {
+            echo "/opt/homebrew/opt/coreutils/libexec/gnubin"
+            echo "/opt/homebrew/opt/openssl/bin"
+          } >> "$GITHUB_PATH"
+          {
+            echo "PKG_CONFIG_PATH=/opt/homebrew/opt/openssl/lib/pkgconfig:/opt/homebrew/opt/readline/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig:/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/sqlite/lib/pkgconfig"
+            echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
+            echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
+          } >> "$GITHUB_ENV"
 
-# =============================================================================
-# §11  APPLY PATCHES
-# =============================================================================
-_apply_0012() {
-    local patch="${_PATCH_DIR}/0012-hardcode-android-api-level.diff"
-    _info "Applying 0012 with API_LEVEL=${TERMUX_PKG_API_LEVEL} ..."
-    sed -e "s%@TERMUX_PKG_API_LEVEL@%${TERMUX_PKG_API_LEVEL}%g" "$patch" \
-        | patch --silent -p1 \
-        || _die "Failed to apply 0012"
-    _ok "Applied: 0012-hardcode-android-api-level.diff"
-}
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
 
-_apply_patches() {
-    _info "Applying patches (0012 already applied) ..."
-    local -a files=()
-    for _p in "${_PATCH_DIR}"/*.patch "${_PATCH_DIR}"/*.diff; do
-        [[ -f "$_p" ]] && files+=("$_p")
-    done
-    IFS=$'\n' read -r -d '' -a files \
-        < <(printf '%s\n' "${files[@]}" | sort && printf '\0') || true
+      - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
+        run: |
+          set -euxo pipefail
+          mkdir -p "$ANDROID_HOME"
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-${ANDROID_SDK_VERSION}" \
+            "build-tools;${ANDROID_BUILD_TOOLS}" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          ls -1 "$ANDROID_HOME/ndk/"
 
-    local applied=0 skipped=0
-    for p in "${files[@]}"; do
-        local name; name="$(basename "$p")"
-        if [[ "$name" == *"hardcode-android-api-level"* ]]; then
-            _info "Skipping (pre-applied): $name"
-            (( skipped++ )) || true; continue
-        fi
-        _info "Applying: $name"
-        patch -p1 --silent < "$p" || _die "Failed to apply: $name"
-        (( applied++ )) || true
-    done
-    _ok "Patches applied: ${applied}  (skipped: ${skipped})"
-}
+      - name: Configure NDK cross-compilation environment
+        run: |
+          set -euo pipefail
+          NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          PREBUILT="$NDK_PATH/toolchains/llvm/prebuilt"
+          echo "=== Available prebuilt toolchains ===" && ls "$PREBUILT"
 
-# =============================================================================
-# §12  AUTORECONF
-# =============================================================================
-_run_autoreconf() {
-    cd "$SRCDIR"
+          # NDK 27 ships ONLY darwin-x86_64; runs via Rosetta 2 on Apple Silicon.
+          if   [ -d "$PREBUILT/darwin-x86_64" ]; then TOOLCHAIN="$PREBUILT/darwin-x86_64"
+          elif [ -d "$PREBUILT/darwin-arm64"  ]; then TOOLCHAIN="$PREBUILT/darwin-arm64"
+          else echo "No NDK toolchain found under $PREBUILT"; exit 1; fi
 
-    # Resolve binaries — prefer explicit env vars (set by CI when using a
-    # custom-built autoconf), fall back to PATH lookup.
-    local _autoconf_bin _autoreconf_bin
-    _autoconf_bin="${AUTOCONF:-$(command -v autoconf)}"
-    _autoreconf_bin="${AUTORECONF:-$(command -v autoreconf)}"
+          SYSROOT="$TOOLCHAIN/sysroot"
+          TARGET="aarch64-linux-android${ANDROID_API_LEVEL}"
+          CC_BIN="$TOOLCHAIN/bin/${TARGET}-clang"
+          CXX_BIN="$TOOLCHAIN/bin/${TARGET}-clang++"
 
-    [[ -x "$_autoconf_bin"   ]] || _die "autoconf not found (tried: $_autoconf_bin)"
-    [[ -x "$_autoreconf_bin" ]] || _die "autoreconf not found (tried: $_autoreconf_bin)"
+          [ -x "$CC_BIN"  ] || { echo "CC not found: $CC_BIN";  ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          [ -x "$CXX_BIN" ] || { echo "CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
-    local _ac_ver
-    _ac_ver="$("$_autoconf_bin" --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
-    _info "Running autoreconf -fi (autoconf ${_ac_ver} at ${_autoconf_bin}) ..."
+          echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
+          {
+            echo "CC=$CC_BIN"
+            echo "CXX=$CXX_BIN"
+            echo "AR=$TOOLCHAIN/bin/llvm-ar"
+            echo "AS=$TOOLCHAIN/bin/llvm-as"
+            echo "LD=$TOOLCHAIN/bin/ld.lld"
+            echo "NM=$TOOLCHAIN/bin/llvm-nm"
+            echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib"
+            echo "STRIP=$TOOLCHAIN/bin/llvm-strip"
+            echo "OBJDUMP=$TOOLCHAIN/bin/llvm-objdump"
+            echo "SYSROOT=$SYSROOT"
+            echo "ANDROID_NDK_HOME=$NDK_PATH"
+            echo "CFLAGS=--sysroot=$SYSROOT -target $TARGET"
+            echo "CXXFLAGS=--sysroot=$SYSROOT -target $TARGET"
+            echo "LDFLAGS=--sysroot=$SYSROOT -fuse-ld=lld"
+            echo "ANDROID_BUILD_TARGET=$TARGET"
+            echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
+          } >> "$GITHUB_ENV"
 
-    # Derive the real bin directory from the resolved absolute path.
-    # Using 'command -v' guarantees we get an absolute path even when the
-    # binary is on PATH as a bare name (as it is inside the CPython container).
-    local _ac_bindir
-    _ac_bindir="$(dirname "$(command -v "$_autoconf_bin")")"
-    local _ac_prefix="${_ac_bindir%/bin}"
+      - name: Verify cross-compiler
+        run: |
+          set -euo pipefail
+          "$CC" --version
+          echo 'int main(void){return 0;}' > /tmp/_cross_test.c
+          "$CC" $CFLAGS /tmp/_cross_test.c -o /tmp/_cross_test \
+            && echo "Cross-compile smoke test passed" \
+            || { echo "Cross-compile smoke test FAILED"; exit 1; }
 
-    local _ac_datadir="${AUTOCONF_DATADIR:-${_ac_prefix}/share/autoconf}"
-    local _aclocal_dir="${_ac_prefix}/share/aclocal"
+      - name: Prepare output prefix
+        run: mkdir -p "$PREFIX"
 
-    AUTOCONF="${_autoconf_bin}" \
-    AUTOHEADER="${AUTOHEADER:-${_ac_bindir}/autoheader}" \
-    AUTOM4TE="${AUTOM4TE:-${_ac_bindir}/autom4te}" \
-    ACLOCAL_PATH="${_aclocal_dir}" \
-        "$_autoreconf_bin" -fi
+      # Download the patched source tarball directly from the release asset.
+      # softprops/action-gh-release outputs a JSON array of uploaded assets;
+      # we construct the URL from the known tag + filename instead, which is
+      # stable and requires no JSON parsing across jobs.
+      - name: Build Python for Android
+        env:
+          PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+          OUTPUT_DIR:         ${{ github.workspace }}/dist
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          chmod +x build.sh
+          ./build.sh
 
-    _ok "autoreconf complete (autoconf ${_ac_ver})."
-}
+      - name: Show build output
+        if: always()
+        run: |
+          echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
+          echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
 
-# =============================================================================
-# §13  DEBPYTHON RENAME + PLACEHOLDER SUBSTITUTION
-# =============================================================================
-_setup_debpython() {
-    local unpacked="${SRCDIR}/python3-defaults-${_DEBPYTHON_COMMIT}"
-    if [[ -d "$unpacked" ]]; then
-        mv "$unpacked" "${SRCDIR}/debpython"
-        _ok "Renamed python3-defaults -> debpython"
-    elif [[ ! -d "${SRCDIR}/debpython" ]]; then
-        _die "debpython directory not found after unpack."
-    fi
-
-    local fullver="${TERMUX_PKG_VERSION}-${TERMUX_PKG_REVISION}"
-    local count=0
-    while IFS= read -r -d '' file; do
-        if sed --version 2>&1 | grep -q GNU; then
-            sed -i \
-                -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
-                -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
-                "$file"
-        else
-            sed -i '' \
-                -e "s|@TERMUX_PYTHON_VERSION@|${_MAJOR_VERSION}|g" \
-                -e "s|@TERMUX_PKG_FULLVERSION@|${fullver}|g" \
-                "$file"
-        fi
-        (( count++ )) || true
-    done < <(find "${SRCDIR}/debpython" -type f -print0)
-    _ok "debpython: substituted version placeholders in ${count} file(s)."
-}
-
-# =============================================================================
-# §14  PACK OUTPUT TARBALL
-# =============================================================================
-_pack_source() {
-    mkdir -p "$OUTPUT_DIR"
-    local out="${OUTPUT_DIR}/${_OUTPUT_TARBALL}"
-    _info "Packing patched source tree -> ${_OUTPUT_TARBALL} ..."
-    # Pack the entire SRCDIR as a single top-level directory "python-src"
-    # so build.sh can extract it with --strip-components=1 directly into its own srcdir.
-    tar -C "$(dirname "$SRCDIR")" \
-        -cJf "$out" \
-        --transform "s|^$(basename "$SRCDIR")|python-src|" \
-        "$(basename "$SRCDIR")"
-    local size; size="$(du -sh "$out" | cut -f1)"
-    _ok "Packed: ${out}  (${size})"
-}
-
-# =============================================================================
-# §15  MAIN
-# =============================================================================
-main() {
-    _parse_args "$@"
-    _setup_env
-
-    _section "Termux Python ${TERMUX_PKG_VERSION} — Prepare Source"
-    printf "  %-16s %s\n" "Version:"    "${TERMUX_PKG_VERSION} (rev ${TERMUX_PKG_REVISION})"
-    printf "  %-16s %s\n" "API Level:"  "${TERMUX_PKG_API_LEVEL}"
-    printf "  %-16s %s\n" "Output:"     "${OUTPUT_DIR}/${_OUTPUT_TARBALL}"
-    printf "  %-16s %s\n" "Workdir:"    "${WORKDIR}"
-    printf "  %-16s %s\n" "Jobs:"       "${JOBS}"
-    echo
-
-    _section "Step 1/7 — Tool Check"
-    _check_tools
-
-    _section "Step 2/7 — Patch Validation"
-    _validate_patches
-
-    if [[ "$_OPT_CLEAN" == "true" ]]; then
-        _info "Removing workdir: $WORKDIR"
-        rm -rf "$WORKDIR"
-    fi
-    mkdir -p "$CACHEDIR" "$SRCDIR"
-
-    _section "Step 3/7 — Download Sources"
-    _download "$_PYTHON_URL" \
-        "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
-        "$_PYTHON_SHA256"
-    _download "$_DEBPYTHON_URL" \
-        "${CACHEDIR}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz" \
-        "$_DEBPYTHON_SHA256"
-
-    _section "Step 4/7 — Unpack"
-    _info "Unpacking Python-${TERMUX_PKG_VERSION}.tgz ..."
-    rm -rf "$SRCDIR"
-    mkdir -p "$SRCDIR"
-    tar -xzf "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
-        --strip-components=1 -C "$SRCDIR" \
-        || _die "Failed to unpack Python tarball."
-    _ok "CPython source unpacked."
-
-    _info "Unpacking python3-defaults tarball ..."
-    tar -xf "${CACHEDIR}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz" \
-        -C "$SRCDIR" || _die "Failed to unpack python3-defaults."
-    _ok "python3-defaults unpacked."
-
-    _section "Step 5/7 — Apply Patches"
-    cd "$SRCDIR"
-    _apply_0012
-    _setup_debpython
-    _apply_patches
-
-    _section "Step 6/7 — autoreconf -fi"
-    _run_autoreconf
-
-    _section "Step 7/7 — Pack Patched Source"
-    _pack_source
-
-    _section "Done"
-    printf "  Upload to GitHub release:\n"
-    printf "  %s\n\n" "${OUTPUT_DIR}/${_OUTPUT_TARBALL}"
-}
-
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+      - name: Upload .deb to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
+          files:    dist/python_*.deb
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
