@@ -75,9 +75,9 @@ jobs:
         id: release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name:   ${{ steps.release_tag.outputs.tag }}
+          tag_name:   "frt"
           name:       "Python ${{ env.PYTHON_VERSION }}-r${{ env.PYTHON_REVISION }}"
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
+          prerelease: true
           body: |
             Termux Python ${{ env.PYTHON_VERSION }} revision ${{ env.PYTHON_REVISION }}
             for Android (API ${{ env.ANDROID_API_LEVEL }}, ${{ env.TERMUX_ARCH }}).
@@ -87,6 +87,7 @@ jobs:
             - `python_*_arm64.deb` — Termux .deb package ready to install
           files: |
             dist/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -215,7 +216,7 @@ jobs:
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
+          tag_name: "frt"
           files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
