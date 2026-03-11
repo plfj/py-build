@@ -22,20 +22,17 @@ jobs:
     name: Prepare patched source
     runs-on: ubuntu-24.04
     container:
+      # Official CPython autoconf image — contains the exact autoconf/automake/
+      # aclocal/libtool versions used by CPython release engineers.
       image: ghcr.io/python/autoconf:2024.10.16.11360930377
-      # This is the official CPython autoconf image — it contains the exact
-      # autoconf/automake/aclocal/libtool versions used by CPython release
-      # engineers, so autoreconf -fi -I m4 works correctly on configure.ac.
 
     outputs:
-      release_id:  ${{ steps.create_release.outputs.id }}
-      upload_url:  ${{ steps.create_release.outputs.upload_url }}
       release_tag: ${{ steps.release_tag.outputs.tag }}
-      source_url:  ${{ steps.upload_source.outputs.browser_download_url }}
+      source_url:  ${{ steps.release.outputs.assets && fromJSON(steps.release.outputs.assets)[0].browser_download_url || '' }}
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install host dependencies
         run: |
@@ -48,8 +45,7 @@ jobs:
         run: |
           autoconf --version | head -1
           autoreconf --version | head -1
-          which autoconf
-          which autoreconf
+          which autoconf && which autoreconf
 
       - name: Prepare and pack patched source
         run: |
@@ -57,7 +53,6 @@ jobs:
           OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" \
           TERMUX_PKG_API_LEVEL="${ANDROID_API_LEVEL}" \
             ./build2.sh
-          echo "DIST_DIR=${GITHUB_WORKSPACE}/dist" >> "$GITHUB_ENV"
 
       - name: Show prepared tarball
         run: ls -lh "${GITHUB_WORKSPACE}/dist/"
@@ -73,34 +68,28 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Release tag: $TAG"
 
-      - name: Create GitHub release
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # softprops/action-gh-release@v2 — creates the release AND uploads assets
+      # in one step. Replaces the deprecated actions/create-release@v1 +
+      # actions/upload-release-asset@v1 combo.
+      - name: Create release and upload patched source tarball
+        id: release
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name:     ${{ steps.release_tag.outputs.tag }}
-          release_name: "Python ${{ env.PYTHON_VERSION }}-r${{ env.PYTHON_REVISION }}"
+          tag_name:   ${{ steps.release_tag.outputs.tag }}
+          name:       "Python ${{ env.PYTHON_VERSION }}-r${{ env.PYTHON_REVISION }}"
+          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
           body: |
             Termux Python ${{ env.PYTHON_VERSION }} revision ${{ env.PYTHON_REVISION }}
             for Android (API ${{ env.ANDROID_API_LEVEL }}, ${{ env.TERMUX_ARCH }}).
 
             **Assets:**
-            - `python-*-patched-src.tar.xz` — Patched + autoreconf'd source (input to build job)
+            - `python-*-patched-src.tar.xz` — Patched + autoreconf'd source
             - `python_*_arm64.deb` — Termux .deb package ready to install
-          draft: false
-          prerelease: ${{ !startsWith(github.ref, 'refs/tags/') }}
-
-      - name: Upload patched source tarball
-        id: upload_source
-        uses: actions/upload-release-asset@v1
+          files: |
+            dist/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ steps.create_release.outputs.upload_url }}
-          asset_path:         ${{ env.DIST_DIR }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
-          asset_name:         python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
-          asset_content_type: application/x-xz
+
   # ===========================================================================
   # JOB 2 — Download patched source, cross-compile, upload .deb to same release
   # ===========================================================================
@@ -118,7 +107,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       - name: Install host dependencies
         run: |
@@ -203,9 +192,13 @@ jobs:
       - name: Prepare output prefix
         run: mkdir -p "$PREFIX"
 
+      # Download the patched source tarball directly from the release asset.
+      # softprops/action-gh-release outputs a JSON array of uploaded assets;
+      # we construct the URL from the known tag + filename instead, which is
+      # stable and requires no JSON parsing across jobs.
       - name: Build Python for Android
         env:
-          PATCHED_SOURCE_URL: ${{ needs.prepare-source.outputs.source_url }}
+          PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
           OUTPUT_DIR:         ${{ github.workspace }}/dist
         run: |
           set -euo pipefail
@@ -219,20 +212,10 @@ jobs:
           echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
           echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
 
-      - name: Find .deb file
-        id: find_deb
-        run: |
-          debfile="$(ls dist/python_*.deb 2>/dev/null | head -1)"
-          [[ -f "$debfile" ]] || { echo "No .deb found in dist/"; exit 1; }
-          echo "path=$debfile"               >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$debfile")" >> "$GITHUB_OUTPUT"
-
       - name: Upload .deb to release
-        uses: actions/upload-release-asset@v1
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
+          files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url:         ${{ needs.prepare-source.outputs.upload_url }}
-          asset_path:         ${{ steps.find_deb.outputs.path }}
-          asset_name:         ${{ steps.find_deb.outputs.name }}
-          asset_content_type: application/vnd.debian.binary-package
