@@ -23,6 +23,7 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly _SCRIPT_DIR
 readonly _PATCH_DIR="${_SCRIPT_DIR}/patches"
+tmp=""
 
 # =============================================================================
 # §1  PACKAGE CONSTANTS
@@ -72,8 +73,8 @@ _OPT_JOBS=""
 # API level needed only for 0012 substitution
 _OPT_API_LEVEL="${TERMUX_PKG_API_LEVEL:-35}"
 # Where to write the output tarball
-OUTPUT_DIR="${OUTPUT_DIR:-${_SCRIPT_DIR}}"
-
+OUTPUT_DIR="${OUTPUT_DIR:-${_SCRIPT_DIR}/dist}"
+mkdir -p "$OUTPUT_DIR"
 # =============================================================================
 # §5  LOGGING
 # =============================================================================
