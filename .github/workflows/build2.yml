@@ -130,7 +130,7 @@ jobs:
             echo "LDFLAGS_HOST=-L/opt/homebrew/opt/openssl/lib -L/opt/homebrew/opt/readline/lib -L/opt/homebrew/opt/zlib/lib"
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
-
+        shell: bash
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -184,6 +184,7 @@ jobs:
             echo "ANDROID_BUILD_TARGET=$TARGET"
             echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
           } >> "$GITHUB_ENV"
+        shell: bash
 
       - name: Verify cross-compiler
         run: |
@@ -193,6 +194,7 @@ jobs:
           "$CC" $CFLAGS /tmp/_cross_test.c -o /tmp/_cross_test \
             && echo "Cross-compile smoke test passed" \
             || { echo "Cross-compile smoke test FAILED"; exit 1; }
+        shell: bash
 
       - name: Prepare output prefix
         run: mkdir -p "$PREFIX"
@@ -210,12 +212,14 @@ jobs:
           mkdir -p dist
           chmod +x build.sh
           ./build.sh
+        shell: bash
 
       - name: Show build output
         if: always()
         run: |
           echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
           echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
+        shell: bash
 
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
