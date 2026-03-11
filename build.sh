@@ -181,20 +181,39 @@ _sha256() {
 }
 
 _download() {
-    local url="$1" dest="$2"
-    mkdir -p "$(dirname "$dest")"
-    if [[ -f "$dest" ]]; then
-        _ok "Cache hit: $(basename "$dest")"; return 0
-    fi
-    _info "Downloading: $(basename "$dest")"
+    local url="$1" dest="$2" expected="${3:-}"
+    # Declare tmp before any early return so the trap never fires on an
+    # unbound variable (set -u would error if trap fires before assignment).
     local tmp="${dest}.tmp.$$"
     trap 'rm -f "$tmp"' RETURN INT TERM
+
+    mkdir -p "$(dirname "$dest")"
+    if [[ -f "$dest" ]]; then
+        if [[ -z "$expected" ]]; then
+            _ok "Cache hit: $(basename "$dest") (no checksum — reusing)"; return 0
+        fi
+        local actual; actual="$(_sha256 "$dest")"
+        if [[ "$actual" == "$expected" ]]; then
+            _ok "Cache hit: $(basename "$dest")"; return 0
+        fi
+        _warn "SHA256 mismatch on cached file — re-downloading"
+        rm -f "$dest"
+    fi
+    _info "Downloading: $(basename "$dest")"
     if command -v curl &>/dev/null; then
         curl -fL --retry 5 --retry-delay 2 --connect-timeout 30 \
              --progress-bar -o "$tmp" "$url" || _die "curl failed: $url"
     else
         wget --tries=5 --timeout=30 -q --show-progress \
              -O "$tmp" "$url" || _die "wget failed: $url"
+    fi
+    if [[ -n "$expected" ]]; then
+        local actual; actual="$(_sha256 "$tmp")"
+        [[ "$actual" == "$expected" ]] || {
+            rm -f "$tmp"
+            _error "SHA256 mismatch: expected=$expected got=$actual"
+            _die "Download integrity check failed."
+        }
     fi
     mv "$tmp" "$dest"
     _ok "Downloaded: $(basename "$dest")"

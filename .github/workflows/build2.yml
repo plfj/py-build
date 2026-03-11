@@ -112,7 +112,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install host dependencies
         run: |
@@ -208,8 +208,8 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          chmod +x build2.sh
-          ./build2.sh
+          chmod +x build.sh
+          ./build.sh
 
       - name: Show build output
         if: always()
