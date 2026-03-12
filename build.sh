@@ -314,18 +314,21 @@ _sha256() {
 
 _download() {
     local url="$1" dest="$2" expected="${3:-}"
+    # Use a fixed tmp path (no trap) to avoid the set -u "unbound variable" error
+    # that fires when a RETURN trap evaluates $tmp after the local goes out of scope.
     local tmp="${dest}.tmp.$$"
-    trap 'rm -f "$tmp"' RETURN INT TERM
 
     mkdir -p "$(dirname "$dest")"
 
     if [[ -f "$dest" ]]; then
         if [[ -z "$expected" ]]; then
-            _ok "Cache hit: $(basename "$dest") (no checksum — reusing)"; return 0
+            _ok "Cache hit: $(basename "$dest") (no checksum — reusing)"
+            return 0
         fi
         local actual; actual="$(_sha256 "$dest")"
         if [[ "$actual" == "$expected" ]]; then
-            _ok "Cache hit: $(basename "$dest")"; return 0
+            _ok "Cache hit: $(basename "$dest")"
+            return 0
         fi
         _warn "SHA256 mismatch on cached file — re-downloading"
         rm -f "$dest"
@@ -334,25 +337,28 @@ _download() {
     _info "Downloading: $url"
     if command -v curl &>/dev/null; then
         curl -fL --retry 5 --retry-delay 2 --connect-timeout 30 \
-             --progress-bar -o "$tmp" "$url" || _die "curl failed: $url"
+             --progress-bar -o "$tmp" "$url" \
+             || { rm -f "$tmp"; _die "curl failed: $url"; }
     elif command -v wget &>/dev/null; then
         wget --tries=5 --timeout=30 -q --show-progress \
-             -O "$tmp" "$url" || _die "wget failed: $url"
+             -O "$tmp" "$url" \
+             || { rm -f "$tmp"; _die "wget failed: $url"; }
     else
         _die "Neither curl nor wget found."
     fi
 
     if [[ -n "$expected" ]]; then
         local actual; actual="$(_sha256 "$tmp")"
-        [[ "$actual" == "$expected" ]] || {
+        if [[ "$actual" != "$expected" ]]; then
             rm -f "$tmp"
             _error "SHA256 mismatch — expected=$expected got=$actual"
             _die "Download integrity check failed."
-        }
+        fi
     fi
 
     mv "$tmp" "$dest"
     _ok "Downloaded: $(basename "$dest")"
+    return 0
 }
 
 # =============================================================================
@@ -964,25 +970,31 @@ EOF
     else
         _warn "dpkg-deb not available; building .deb manually ..."
         local tmp; tmp="$(mktemp -d)"
-        trap 'rm -rf "$tmp"' RETURN
+        # No trap RETURN: with set -u, the trap fires after the local goes out of
+        # scope and $tmp becomes unbound. Clean up explicitly instead.
 
         echo "2.0" > "${tmp}/debian-binary"
 
         # control.tar.gz — always gz; small and universally supported
-        tar -czf "${tmp}/control.tar.gz" -C "$ctrl" .
+        tar -czf "${tmp}/control.tar.gz" -C "$ctrl" . \
+            || { rm -rf "$tmp"; _die "control.tar.gz creation failed."; }
 
         # data.tar.xz — compress with xz binary, not tar -J, for macOS compat
-        tar -cf "${tmp}/data.tar" --exclude='./DEBIAN' -C "$debdir" .
-        xz -z -T0 "${tmp}/data.tar"           # produces data.tar.xz in-place
-        # -T0 uses all available threads (respects CPU_COUNT implicitly)
+        tar -cf "${tmp}/data.tar" --exclude='./DEBIAN' -C "$debdir" . \
+            || { rm -rf "$tmp"; _die "data.tar creation failed."; }
+        xz -z -T0 "${tmp}/data.tar" \
+            || { rm -rf "$tmp"; _die "xz compression of data.tar failed."; }
 
         # ar — prefer GNU ar (binutils); fall back to BSD ar (both work for .deb)
         local _ar="ar"
-        command -v gar &>/dev/null && _ar="gar"   # Homebrew gnu-ar shim name
+        if command -v gar &>/dev/null; then _ar="gar"; fi  # Homebrew gnu-ar shim
         "${_ar}" -rcs "$debout" \
             "${tmp}/debian-binary" \
             "${tmp}/control.tar.gz" \
-            "${tmp}/data.tar.xz"
+            "${tmp}/data.tar.xz" \
+            || { rm -rf "$tmp"; _die "ar failed assembling .deb."; }
+
+        rm -rf "$tmp"
     fi
 
     local size; size="$(du -sh "$debout" | cut -f1)"
