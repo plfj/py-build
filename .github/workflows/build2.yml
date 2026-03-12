@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install host dependencies
         run: |
@@ -120,7 +120,7 @@ jobs:
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── 2. Host dependencies ─────────────────────────────────────────────────
       # gnu-tar   : build.sh uses 'tar -xJf' and '_create_deb' uses tar; BSD tar
@@ -235,7 +235,7 @@ jobs:
       # detects a cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
+          PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/frt/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
           OUTPUT_DIR:         ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
