@@ -366,7 +366,7 @@ _download() {
 # =============================================================================
 _check_tools() {
     _info "Checking required build tools ..."
-    local -a required=(make tar pkg-config perl)
+    local -a required=(make tar pkg-config perl gawk ar zstd)
     local missing=0
 
     if ! command -v clang &>/dev/null && ! command -v gcc &>/dev/null; then
@@ -574,16 +574,21 @@ _setup_flags() {
 # =============================================================================
 # §11b  CROSS-COMPILE DEPENDENCIES
 # =============================================================================
-# Builds bzip2, xz, sqlite3, openssl, and ncurses from source against the NDK
-# sysroot into CROSS_DEPS_PREFIX. On an on-device build the packages are already
-# installed under TERMUX_PREFIX; we skip the cross-build and reuse them.
+# Builds bzip2, xz, sqlite3, and openssl from source against the NDK sysroot.
+# ncurses is extracted directly from a Termux bootstrap .deb — cross-compiling
+# ncurses requires a two-phase host-tool + cross-library build that its build
+# system does not support in a single configure invocation.
+# On an on-device build all packages are already installed; we reuse them.
 #
 # Bump these when upstream ships a security release.
 _BZIP2_VERSION="1.0.8"
 _XZ_VERSION="5.6.3"
-_SQLITE_VERSION="3470200"    # 3.47.2  (YYYY0MMD0 autoconf tarball naming)
+_SQLITE_VERSION="3470200"    # 3.47.2  (YYYYMMDD0 autoconf tarball naming)
 _OPENSSL_VERSION="3.4.1"
-_NCURSES_VERSION="6.5"
+# Termux ncurses version to fetch. The arch is substituted at runtime.
+# To update: browse https://packages.termux.dev/apt/termux-main/pool/main/n/ncurses/
+# find the latest libncurses_*_<arch>.deb and ncurses-dev_*_<arch>.deb.
+_NCURSES_TERMUX_VERSION="6.5-2"
 
 _build_deps() {
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
@@ -788,76 +793,102 @@ _build_deps() {
         _info "OpenSSL already built — skipping."
     fi
 
-    # ── ncurses ───────────────────────────────────────────────────────────────
-    # ncurses MUST be configured and built in-tree (directly inside the source
-    # directory). Its generated makefiles use relative paths like ../lib/ that
-    # resolve correctly only when the working directory is a sub-directory of
-    # the source tree. Out-of-tree builds in a separate cross-build/ directory
-    # always fail with "No rule to make target ../lib/libncursesw.a".
-    local nc_src="${deps_build}/ncurses-${_NCURSES_VERSION}"
-    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a" ]]; then
-        _info "Building ncurses ${_NCURSES_VERSION} ..."
-        _dl_extract \
-            "https://invisible-mirror.net/archives/ncurses/ncurses-${_NCURSES_VERSION}.tar.gz" \
-            "ncurses-${_NCURSES_VERSION}.tar.gz" \
-            "$nc_src"
-        (
-            # Configure and build in-tree — do NOT use a separate build dir.
-            # Reset any previous in-tree configure state so a clean run works.
-            cd "$nc_src"
-            if [[ -f Makefile ]]; then
-                make distclean >> "${log_dir}/ncurses.log" 2>&1 || true
-            fi
-            # --without-termlib: compile tinfo directly into libncursesw.a;
-            #   avoids a separate libtinfow.a that in-tree builds need but that
-            #   breaks the relative ../lib/ references in generated makefiles.
-            # --without-manpages: avoids needing nroff on the build host.
-            # --disable-db-install: skip terminfo database (Termux ships its own).
-            # --without-fallbacks: do NOT invoke host tic to compile terminfo;
-            #   macOS BSD tic fails writing to runner tmp dirs.
-            # --enable-widec: build libncursesw (wide-char) which Python prefers.
-            # -j1: ncurses sub-makes use relative paths with known race conditions.
-            export CC="${_cc}"
-            export CFLAGS="${_cflags} -fPIC"
-            export LDFLAGS="${_ldflags}"
-            ./configure \
-                --prefix="${CROSS_DEPS_PREFIX}" \
-                --host="${TERMUX_HOST_PLATFORM}" \
-                --build="${TERMUX_BUILD_TUPLE}" \
-                --without-shared --enable-static \
-                --enable-widec \
-                --without-termlib \
-                --without-cxx-binding --without-ada \
-                --without-progs --without-tests \
-                --without-manpages \
-                --disable-db-install \
-                --without-fallbacks \
-                --disable-stripping \
-                > "${log_dir}/ncurses.log" 2>&1 \
-                || { cat "${log_dir}/ncurses.log"; _die "ncurses configure failed."; }
-            make -j1 \
-                >> "${log_dir}/ncurses.log" 2>&1 \
-                || { cat "${log_dir}/ncurses.log"; _die "ncurses build failed."; }
-            make install \
-                >> "${log_dir}/ncurses.log" 2>&1 \
-                || _die "ncurses install failed."
-        )
-        # Python's setup.py looks for curses.h under include/ncursesw/ (widec)
-        # or include/ncurses/. Create a plain ncurses/ alias for the latter.
-        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
-            ln -sf "${CROSS_DEPS_PREFIX}/include/ncursesw" \
-                   "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
-        fi
-        # libncurses.a alias: Python configure probes -lncurses (without 'w').
-        if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncurses.a" ]]; then
-            ln -sf libncursesw.a \
-                   "${CROSS_DEPS_PREFIX}/lib/libncurses.a" 2>/dev/null || true
-        fi
-        _ok "ncurses built."
-    else
-        _info "ncurses already built — skipping."
-    fi
+    # ── ncurses — extracted from Termux .deb (shared lib approach) ─────────
+    # ncurses cross-compilation from source is not viable in a single-phase build:
+    # its makefiles require build-host helper binaries in ../lib/ before they can
+    # compile the target library, which never works cleanly in cross setups.
+    # We extract libncursesw.so (+ symlinks) and headers from the official Termux
+    # aarch64 .deb and link Python's _curses extension against the shared lib.
+    # The .so is present on every Termux installation via the ncurses package.
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so" ]] && \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a"  ]]; then
+        _info "Extracting ncurses from Termux .deb ..."
+        local nc_lib_deb="${TERMUX_PKG_CACHEDIR}/libncurses.deb"
+        local nc_dev_deb="${TERMUX_PKG_CACHEDIR}/ncurses-dev.deb"
+        _download "${_NCURSES_DEB_URL}"         "$nc_lib_deb" "${_NCURSES_DEB_SHA256}"
+        _download "${_NCURSES_HEADERS_DEB_URL}" "$nc_dev_deb" "${_NCURSES_HEADERS_DEB_SHA256}"
 
+        local nc_extract="${deps_build}/ncurses-deb"
+        rm -rf "$nc_extract"
+        mkdir -p "$nc_extract"
+
+        # Extract both .deb archives (standard ar + data.tar.*)
+        for deb in "$nc_lib_deb" "$nc_dev_deb"; do
+            local deb_tmp="${nc_extract}/tmp_$(basename "$deb")"
+            mkdir -p "$deb_tmp"
+            (
+                cd "$deb_tmp"
+                ar x "$deb"
+                local data_tar
+                data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
+                if [[ -z "$data_tar" ]]; then
+                    _die "No data.tar.* found in $(basename "$deb")"
+                fi
+                case "$data_tar" in
+                    *.xz)  tar -xJf "$data_tar" -C "$nc_extract" ;;
+                    *.gz)  tar -xzf "$data_tar" -C "$nc_extract" ;;
+                    *.zst) zstd -d  "$data_tar" --stdout | tar -x -C "$nc_extract" ;;
+                    *)     _die "Unknown data archive format: $data_tar" ;;
+                esac
+            )
+        done
+
+        # Termux installs under /data/data/com.termux/files/usr
+        local termux_usr="${nc_extract}/data/data/com.termux/files/usr"
+        if [[ ! -d "$termux_usr" ]]; then
+            ls -la "$nc_extract" || true
+            _die "ncurses .deb extraction failed — expected tree at ${termux_usr}"
+        fi
+
+        install -d "${CROSS_DEPS_PREFIX}/include" "${CROSS_DEPS_PREFIX}/lib"
+
+        # Copy headers (ncursesw/ directory)
+        if [[ -d "${termux_usr}/include/ncursesw" ]]; then
+            cp -a "${termux_usr}/include/ncursesw" "${CROSS_DEPS_PREFIX}/include/"
+            _info "  Installed ncursesw headers."
+        else
+            _warn "  ncursesw headers not found in .deb — _curses may not build."
+        fi
+
+        # Copy shared libraries (.so and symlinks)
+        local _nc_found=0
+        for f in "${termux_usr}/lib"/libncurses*.so*                  "${termux_usr}/lib"/libpanel*.so*                  "${termux_usr}/lib"/libform*.so*                  "${termux_usr}/lib"/libmenu*.so*; do
+            if [[ -e "$f" ]]; then
+                cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/"
+                (( _nc_found++ )) || true
+            fi
+        done
+        if [[ "$_nc_found" -eq 0 ]]; then
+            _die "No ncurses .so files found in extracted .deb — check URLs."
+        fi
+        _info "  Installed ${_nc_found} ncurses library files."
+
+        # Compat symlinks Python setup.py expects
+        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
+            ln -sf ncursesw "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
+        fi
+        # libncurses.so symlink without 'w' for configure probes using -lncurses
+        local _nc_so
+        _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so."* 2>/dev/null | head -1 || true)"
+        if [[ -z "$_nc_so" ]]; then
+            _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so" 2>/dev/null || true)"
+        fi
+        if [[ -n "$_nc_so" ]] && [[ ! -e "${CROSS_DEPS_PREFIX}/lib/libncurses.so" ]]; then
+            ln -sf "$(basename "$_nc_so")"                    "${CROSS_DEPS_PREFIX}/lib/libncurses.so" 2>/dev/null || true
+        fi
+
+        # Create stub .a files so Python's configure --with-libs probe succeeds.
+        # The actual link uses the .so; the .a is just an empty archive sentinel.
+        for stub in libncursesw.a libncurses.a; do
+            if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/${stub}" ]]; then
+                "${AR:-llvm-ar}" rcs "${CROSS_DEPS_PREFIX}/lib/${stub}" 2>/dev/null || true
+            fi
+        done
+
+        _ok "ncurses extracted from Termux .deb."
+    else
+        _info "ncurses already present — skipping."
+    fi
     # ── Point Python build at the cross-built deps ────────────────────────────
     # Override PKG_CONFIG to see ONLY the cross-built packages, not host packages.
     CPPFLAGS+=" -I${CROSS_DEPS_PREFIX}/include"
