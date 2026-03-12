@@ -799,24 +799,54 @@ _build_deps() {
         (
             mkdir -p "${nc_src}/cross-build"
             cd "${nc_src}/cross-build"
+            # --without-termlib: omit separate libtinfo; tinfo is compiled into
+            #   libncursesw.a directly. --with-termlib causes a ../lib/libtinfow.a
+            #   dependency that breaks out-of-tree cross-builds.
+            # --without-manpages: avoids needing tic/nroff on the build host.
+            # --disable-db-install: skip terminfo database (not needed on device;
+            #   Termux ships its own).
+            # --with-fallbacks: embed minimal terminfo entries so the curses module
+            #   works on devices that lack a terminfo database at the expected path.
+            # --enable-widec: build libncursesw (wide-char), which Python prefers.
+            # -j1: ncurses has known parallel-build races in some sub-makes;
+            #   use single-threaded build to avoid intermittent failures.
+            export CC="${_cc}"
+            export CFLAGS="${_cflags} -fPIC"
+            export LDFLAGS="${_ldflags}"
             "${nc_src}/configure" \
                 --prefix="${CROSS_DEPS_PREFIX}" \
                 --host="${TERMUX_HOST_PLATFORM}" \
                 --build="${TERMUX_BUILD_TUPLE}" \
                 --without-shared --enable-static \
-                --with-termlib --enable-widec \
+                --enable-widec \
+                --without-termlib \
                 --without-cxx-binding --without-ada \
                 --without-progs --without-tests \
+                --without-manpages \
+                --disable-db-install \
+                --with-fallbacks=linux,xterm,xterm-256color \
                 --disable-stripping \
-                CC="${_cc}" CFLAGS="${_cflags} -fPIC" LDFLAGS="${_ldflags}" \
                 > "${log_dir}/ncurses.log" 2>&1 \
                 || { cat "${log_dir}/ncurses.log"; _die "ncurses configure failed."; }
-            make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+            make -j1 \
                 >> "${log_dir}/ncurses.log" 2>&1 \
                 || { cat "${log_dir}/ncurses.log"; _die "ncurses build failed."; }
             make install \
                 >> "${log_dir}/ncurses.log" 2>&1 \
                 || _die "ncurses install failed."
+            # Python's setup.py looks for ncurses headers in include/ncursesw/.
+            # ncurses installs them there with --enable-widec, but also create
+            # a plain include/ncurses/ symlink as a fallback.
+            if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
+                ln -sf "${CROSS_DEPS_PREFIX}/include/ncursesw" \
+                       "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
+            fi
+            # Also create libncurses.a -> libncursesw.a alias so configure
+            # probes that look for -lncurses (without the w) succeed.
+            if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncurses.a" ]]; then
+                ln -sf libncursesw.a \
+                       "${CROSS_DEPS_PREFIX}/lib/libncurses.a" 2>/dev/null || true
+            fi
         )
         _ok "ncurses built."
     else
