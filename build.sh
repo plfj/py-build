@@ -360,7 +360,7 @@ _download() {
 # =============================================================================
 _check_tools() {
     _info "Checking required build tools ..."
-    local -a required=(make tar pkg-config)
+    local -a required=(make tar pkg-config perl)
     local missing=0
 
     if ! command -v clang &>/dev/null && ! command -v gcc &>/dev/null; then
@@ -387,6 +387,11 @@ _check_tools() {
 # §11  PRE-CONFIGURE FLAGS
 # =============================================================================
 _setup_flags() {
+    # Unset host-only pkg-config and include paths exported by the workflow's
+    # "Install host dependencies" step. Leaving them in place would cause
+    # configure to find host (macOS/x86_64) headers and link against host libs.
+    unset PKG_CONFIG_PATH CPPFLAGS_HOST LDFLAGS_HOST
+
     local _BUILD_PYTHON
     _BUILD_PYTHON="$(command -v "python${_MAJOR_VERSION}" \
                    || command -v python3 \
@@ -487,7 +492,7 @@ _setup_flags() {
     # --with-system-ffi removed in Python 3.13; libffi is always external now.
     # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
     CONF_FLAGS+=" --without-ensurepip"
-    # --enable-loadable-sqlite-extensions omitted: sqlite3 not in NDK sysroot.
+    CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
 
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -557,6 +562,236 @@ _setup_flags() {
         export LIBCRYPT_LIBS=""
     fi
     export CFLAGS CPPFLAGS LDFLAGS CONF_CACHE CONF_FLAGS
+}
+
+
+# =============================================================================
+# §11b  CROSS-COMPILE DEPENDENCIES
+# =============================================================================
+# Builds bzip2, xz, sqlite3, openssl, and ncurses from source against the NDK
+# sysroot into CROSS_DEPS_PREFIX. On an on-device build the packages are already
+# installed under TERMUX_PREFIX; we skip the cross-build and reuse them.
+#
+# Bump these when upstream ships a security release.
+_BZIP2_VERSION="1.0.8"
+_XZ_VERSION="5.6.3"
+_SQLITE_VERSION="3470200"    # 3.47.2  (YYYY0MMD0 autoconf tarball naming)
+_OPENSSL_VERSION="3.4.1"
+_NCURSES_VERSION="6.5"
+
+_build_deps() {
+    if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
+        _info "On-device build — using TERMUX_PREFIX libraries for dependencies."
+        CROSS_DEPS_PREFIX="${TERMUX_PREFIX}"
+        export CROSS_DEPS_PREFIX
+        return 0
+    fi
+
+    CROSS_DEPS_PREFIX="${TMPDIR:-/tmp}/python-build/deps"
+    export CROSS_DEPS_PREFIX
+    local log_dir="${CROSS_DEPS_PREFIX}/build-logs"
+    local deps_build="${TMPDIR:-/tmp}/python-build/deps-build"
+    mkdir -p "${CROSS_DEPS_PREFIX}" "${log_dir}" "${deps_build}" "${TERMUX_PKG_CACHEDIR}"
+
+    # Capture the cross-compile tools and flags that were set by _setup_flags.
+    local _cc="${CC:-clang}"
+    local _cxx="${CXX:-clang++}"
+    local _ar="${AR:-llvm-ar}"
+    local _ranlib="${RANLIB:-llvm-ranlib}"
+    local _cflags="${CFLAGS:-}"
+    local _ldflags="${LDFLAGS:-}"
+
+    # ── helper: download + extract ────────────────────────────────────────────
+    _dl_extract() {
+        local url="$1" tarball="$2" dir="$3"
+        _download "$url" "${TERMUX_PKG_CACHEDIR}/${tarball}"
+        if [[ -d "$dir" ]]; then
+            _info "  Already extracted: $(basename "$dir")"
+            return 0
+        fi
+        mkdir -p "$(dirname "$dir")"
+        case "$tarball" in
+            *.tar.xz)       tar -xJf "${TERMUX_PKG_CACHEDIR}/${tarball}" -C "$(dirname "$dir")" ;;
+            *.tar.gz|*.tgz) tar -xzf "${TERMUX_PKG_CACHEDIR}/${tarball}" -C "$(dirname "$dir")" ;;
+            *.tar.bz2)      tar -xjf "${TERMUX_PKG_CACHEDIR}/${tarball}" -C "$(dirname "$dir")" ;;
+            *)              _die "_dl_extract: unknown archive type: $tarball" ;;
+        esac
+        return 0
+    }
+
+    # ── bzip2 ─────────────────────────────────────────────────────────────────
+    local bz2_src="${deps_build}/bzip2-${_BZIP2_VERSION}"
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libbz2.a" ]]; then
+        _info "Building bzip2 ${_BZIP2_VERSION} ..."
+        _dl_extract \
+            "https://sourceware.org/pub/bzip2/bzip2-${_BZIP2_VERSION}.tar.gz" \
+            "bzip2-${_BZIP2_VERSION}.tar.gz" \
+            "$bz2_src"
+        make -C "$bz2_src" -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+            CC="${_cc}" AR="${_ar}" RANLIB="${_ranlib}" \
+            CFLAGS="${_cflags} -fPIC" \
+            libbz2.a \
+            > "${log_dir}/bzip2.log" 2>&1 \
+            || { cat "${log_dir}/bzip2.log"; _die "bzip2 build failed."; }
+        install -d "${CROSS_DEPS_PREFIX}/lib" "${CROSS_DEPS_PREFIX}/include"
+        install -m 644 "${bz2_src}/libbz2.a" "${CROSS_DEPS_PREFIX}/lib/"
+        install -m 644 "${bz2_src}/bzlib.h"  "${CROSS_DEPS_PREFIX}/include/"
+        _ok "bzip2 built."
+    else
+        _info "bzip2 already built — skipping."
+    fi
+
+    # ── xz / liblzma ──────────────────────────────────────────────────────────
+    local xz_src="${deps_build}/xz-${_XZ_VERSION}"
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/liblzma.a" ]]; then
+        _info "Building xz/liblzma ${_XZ_VERSION} ..."
+        _dl_extract \
+            "https://github.com/tukaani-project/xz/releases/download/v${_XZ_VERSION}/xz-${_XZ_VERSION}.tar.xz" \
+            "xz-${_XZ_VERSION}.tar.xz" \
+            "$xz_src"
+        (
+            mkdir -p "${xz_src}/cross-build"
+            cd "${xz_src}/cross-build"
+            "${xz_src}/configure" \
+                --prefix="${CROSS_DEPS_PREFIX}" \
+                --host="${TERMUX_HOST_PLATFORM}" \
+                --build="${TERMUX_BUILD_TUPLE}" \
+                --disable-shared --enable-static \
+                --disable-xz --disable-xzdec --disable-lzmadec \
+                --disable-lzmainfo --disable-scripts --disable-doc \
+                CC="${_cc}" CFLAGS="${_cflags} -fPIC" LDFLAGS="${_ldflags}" \
+                > "${log_dir}/xz-configure.log" 2>&1 \
+                || { cat "${log_dir}/xz-configure.log"; _die "xz configure failed."; }
+            make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+                >> "${log_dir}/xz-configure.log" 2>&1 \
+                || { cat "${log_dir}/xz-configure.log"; _die "xz build failed."; }
+            make install \
+                >> "${log_dir}/xz-configure.log" 2>&1 \
+                || _die "xz install failed."
+        )
+        _ok "xz/liblzma built."
+    else
+        _info "xz/liblzma already built — skipping."
+    fi
+
+    # ── sqlite3 ───────────────────────────────────────────────────────────────
+    local sq_src="${deps_build}/sqlite-autoconf-${_SQLITE_VERSION}"
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libsqlite3.a" ]]; then
+        _info "Building sqlite3 ${_SQLITE_VERSION} ..."
+        _dl_extract \
+            "https://www.sqlite.org/2024/sqlite-autoconf-${_SQLITE_VERSION}.tar.gz" \
+            "sqlite-autoconf-${_SQLITE_VERSION}.tar.gz" \
+            "$sq_src"
+        (
+            mkdir -p "${sq_src}/cross-build"
+            cd "${sq_src}/cross-build"
+            "${sq_src}/configure" \
+                --prefix="${CROSS_DEPS_PREFIX}" \
+                --host="${TERMUX_HOST_PLATFORM}" \
+                --build="${TERMUX_BUILD_TUPLE}" \
+                --disable-shared --enable-static \
+                --enable-fts5 --enable-json1 \
+                CC="${_cc}" CFLAGS="${_cflags} -fPIC" LDFLAGS="${_ldflags}" \
+                > "${log_dir}/sqlite.log" 2>&1 \
+                || { cat "${log_dir}/sqlite.log"; _die "sqlite configure failed."; }
+            make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+                >> "${log_dir}/sqlite.log" 2>&1 \
+                || { cat "${log_dir}/sqlite.log"; _die "sqlite build failed."; }
+            make install \
+                >> "${log_dir}/sqlite.log" 2>&1 \
+                || _die "sqlite install failed."
+        )
+        _ok "sqlite3 built."
+    else
+        _info "sqlite3 already built — skipping."
+    fi
+
+    # ── openssl ───────────────────────────────────────────────────────────────
+    local ssl_src="${deps_build}/openssl-${_OPENSSL_VERSION}"
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libssl.a" ]]; then
+        _info "Building OpenSSL ${_OPENSSL_VERSION} ..."
+        _dl_extract \
+            "https://github.com/openssl/openssl/releases/download/openssl-${_OPENSSL_VERSION}/openssl-${_OPENSSL_VERSION}.tar.gz" \
+            "openssl-${_OPENSSL_VERSION}.tar.gz" \
+            "$ssl_src"
+        (
+            cd "$ssl_src"
+            local ossl_target
+            case "${TERMUX_ARCH}" in
+                aarch64) ossl_target="android-arm64"  ;;
+                arm)     ossl_target="android-arm"    ;;
+                x86_64)  ossl_target="android-x86_64" ;;
+                i686)    ossl_target="android-x86"    ;;
+                *)       _die "Unknown arch for OpenSSL: ${TERMUX_ARCH}" ;;
+            esac
+            # OpenSSL's Configure script needs ANDROID_NDK_ROOT set to the NDK root
+            # (the ndk/<version> directory), not the toolchain subdirectory.
+            export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+            perl Configure "${ossl_target}" \
+                "-D__ANDROID_API__=${TERMUX_PKG_API_LEVEL}" \
+                "--prefix=${CROSS_DEPS_PREFIX}" \
+                no-shared no-tests no-ui-console \
+                "CFLAGS=${_cflags} -fPIC" \
+                "LDFLAGS=${_ldflags}" \
+                "CC=${_cc}" \
+                > "${log_dir}/openssl.log" 2>&1 \
+                || { cat "${log_dir}/openssl.log"; _die "openssl configure failed."; }
+            make -j"${TERMUX_PKG_MAKE_PROCESSES}" build_sw \
+                >> "${log_dir}/openssl.log" 2>&1 \
+                || { cat "${log_dir}/openssl.log"; _die "openssl build failed."; }
+            make install_sw \
+                >> "${log_dir}/openssl.log" 2>&1 \
+                || _die "openssl install failed."
+        )
+        _ok "OpenSSL built."
+    else
+        _info "OpenSSL already built — skipping."
+    fi
+
+    # ── ncurses ───────────────────────────────────────────────────────────────
+    local nc_src="${deps_build}/ncurses-${_NCURSES_VERSION}"
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a" ]]; then
+        _info "Building ncurses ${_NCURSES_VERSION} ..."
+        _dl_extract \
+            "https://invisible-mirror.net/archives/ncurses/ncurses-${_NCURSES_VERSION}.tar.gz" \
+            "ncurses-${_NCURSES_VERSION}.tar.gz" \
+            "$nc_src"
+        (
+            mkdir -p "${nc_src}/cross-build"
+            cd "${nc_src}/cross-build"
+            "${nc_src}/configure" \
+                --prefix="${CROSS_DEPS_PREFIX}" \
+                --host="${TERMUX_HOST_PLATFORM}" \
+                --build="${TERMUX_BUILD_TUPLE}" \
+                --without-shared --enable-static \
+                --with-termlib --enable-widec \
+                --without-cxx-binding --without-ada \
+                --without-progs --without-tests \
+                --disable-stripping \
+                CC="${_cc}" CFLAGS="${_cflags} -fPIC" LDFLAGS="${_ldflags}" \
+                > "${log_dir}/ncurses.log" 2>&1 \
+                || { cat "${log_dir}/ncurses.log"; _die "ncurses configure failed."; }
+            make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+                >> "${log_dir}/ncurses.log" 2>&1 \
+                || { cat "${log_dir}/ncurses.log"; _die "ncurses build failed."; }
+            make install \
+                >> "${log_dir}/ncurses.log" 2>&1 \
+                || _die "ncurses install failed."
+        )
+        _ok "ncurses built."
+    else
+        _info "ncurses already built — skipping."
+    fi
+
+    # ── Point Python build at the cross-built deps ────────────────────────────
+    # Override PKG_CONFIG to see ONLY the cross-built packages, not host packages.
+    CPPFLAGS+=" -I${CROSS_DEPS_PREFIX}/include"
+    LDFLAGS+=" -L${CROSS_DEPS_PREFIX}/lib"
+    export PKG_CONFIG_PATH="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
+    export PKG_CONFIG_LIBDIR="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
+    export CPPFLAGS LDFLAGS
+    _ok "All cross-compiled dependencies ready at ${CROSS_DEPS_PREFIX}."
+    return 0
 }
 
 # =============================================================================
@@ -778,22 +1013,22 @@ main() {
     printf "  %-20s %s\n" "Source URL:"   "${PATCHED_SOURCE_URL}"
     echo
 
-    _section "Step 1/10 — Tool Check"
+    _section "Step 1/11 — Tool Check"
     _check_tools
 
     if [[ "$_OPT_CLEAN" == "true" ]]; then
-        _section "Step 2/10 — Clean"
+        _section "Step 2/11 — Clean"
         rm -rf "$TERMUX_PKG_SRCDIR" "$TERMUX_PKG_BUILDDIR"
         _ok "Clean complete."
     else
-        _info "Step 2/10 — Clean skipped (pass --clean to wipe build dirs)."
+        _info "Step 2/11 — Clean skipped (pass --clean to wipe build dirs)."
     fi
 
-    _section "Step 3/10 — Download Patched Source"
+    _section "Step 3/11 — Download Patched Source"
     mkdir -p "$TERMUX_PKG_CACHEDIR" "$TERMUX_PKG_SRCDIR"
     _download "${PATCHED_SOURCE_URL}" "${TERMUX_PKG_CACHEDIR}/${_PATCHED_TARBALL}"
 
-    _section "Step 4/10 — Unpack Patched Source"
+    _section "Step 4/11 — Unpack Patched Source"
     _info "Unpacking ${_PATCHED_TARBALL} ..."
     rm -rf "$TERMUX_PKG_SRCDIR"
     mkdir -p "$TERMUX_PKG_SRCDIR"
@@ -802,13 +1037,16 @@ main() {
         || _die "Failed to unpack patched source tarball."
     _ok "Patched source unpacked."
 
-    _section "Step 5/10 — Setup Compiler Flags"
+    _section "Step 5/11 — Setup Compiler Flags"
     _setup_flags
 
-    _section "Step 6/10 — Configure"
+    _section "Step 6/11 — Cross-Compile Dependencies"
+    _build_deps
+
+    _section "Step 7/11 — Configure"
     _do_configure
 
-    _section "Step 7/10 — Build"
+    _section "Step 8/11 — Build"
     _info "make -j${TERMUX_PKG_MAKE_PROCESSES} ..."
     cd "$TERMUX_PKG_BUILDDIR"
     # PYTHON_EXTRA_LDFLAGS: polyfill libs not available at configure time;
@@ -818,15 +1056,15 @@ main() {
         || _die "make failed."
     _ok "Build complete."
 
-    _section "Step 8/10 — Install"
+    _section "Step 9/11 — Install"
     make install || _die "make install failed."
     _ok "Install complete."
 
-    _section "Step 9/10 — Post-Install + Module Verification"
+    _section "Step 10/11 — Post-Install + Module Verification"
     _post_install
     _verify_modules
 
-    _section "Step 10/10 — Package"
+    _section "Step 11/11 — Package"
     if [[ "$_OPT_KEEP_TESTS" != "true" ]]; then
         _info "Removing test trees ..."
         rm -rf \
