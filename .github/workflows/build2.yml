@@ -135,7 +135,7 @@ jobs:
           set -euo pipefail
           brew install --quiet \
             wget curl git unzip make pkg-config \
-            coreutils gawk xz gnu-tar binutils \
+            coreutils gawk xz zstd gnu-tar binutils \
             openssl sqlite readline zlib libffi
           # Prepend GNU tool paths so nproc, gtar, gar etc. shadow BSD equivalents
           {
@@ -229,28 +229,49 @@ jobs:
       - name: Prepare output prefix
         run: mkdir -p "${{ github.workspace }}/prefix"
 
-      # ── 8. Build ─────────────────────────────────────────────────────────────
-      # PATCHED_SOURCE_URL is constructed from the release tag produced by the
-      # prepare-source job.  build.sh auto-skips module verification because it
-      # detects a cross-compile context (host cannot exec Android ELF binaries).
+      # ── 8. Wipe stale dep build trees ────────────────────────────────────────
+      # Previous failed runs may leave a ncurses source tree with a Makefile in
+      # /tmp/python-build/deps-build/. If libncursesw.a/.so is absent from
+      # deps/ but the source tree is present, make could pick it up erroneously.
+      # Nuke deps-build/ (not deps/ — we want to keep downloaded/extracted libs).
+      - name: Clean stale dependency build trees
+        run: rm -rf /tmp/python-build/deps-build /private/tmp/python-build/deps-build
+
+      # ── 9. Build ─────────────────────────────────────────────────────────────
+      # PATCHED_SOURCE_URL is constructed inside the run: shell so that any
+      # missing ${{ }} expression (e.g. release_tag undefined) is caught with
+      # a clear error before build.sh ever runs.
+      # build.sh auto-skips module verification because it detects a
+      # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/frt/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
-          OUTPUT_DIR:         ${{ github.workspace }}/dist
+          RELEASE_TAG:  ${{ needs.prepare-source.outputs.release_tag }}
+          OUTPUT_DIR:   ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
+
+          # Validate that prepare-source actually exported a release tag.
+          if [[ -z "${RELEASE_TAG:-}" ]]; then
+            echo "ERROR: RELEASE_TAG is empty — prepare-source job did not expose release_tag as an output."
+            exit 1
+          fi
+
+          # Build and export the source URL explicitly so it is visible in the log.
+          export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/python-${PYTHON_VERSION}-patched-src.tar.xz"
+          echo "PATCHED_SOURCE_URL=${PATCHED_SOURCE_URL}"
+
           mkdir -p dist
           chmod +x build.sh
           ./build.sh
 
-      # ── 9. Show artifacts ─────────────────────────────────────────────────────
+      # ── 10. Show artifacts ─────────────────────────────────────────────────────
       - name: Show build output
         if: always()
         run: |
           echo "=== prefix/bin ===" && ls -lh "${{ github.workspace }}/prefix/bin" 2>/dev/null || echo "(empty)"
           echo "=== dist/ ==="      && ls -lh dist/                                2>/dev/null || echo "(empty)"
 
-      # ── 10. Upload .deb to release ────────────────────────────────────────────
+      # ── 11. Upload .deb to release ────────────────────────────────────────────
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
