@@ -789,6 +789,11 @@ _build_deps() {
     fi
 
     # ── ncurses ───────────────────────────────────────────────────────────────
+    # ncurses MUST be configured and built in-tree (directly inside the source
+    # directory). Its generated makefiles use relative paths like ../lib/ that
+    # resolve correctly only when the working directory is a sub-directory of
+    # the source tree. Out-of-tree builds in a separate cross-build/ directory
+    # always fail with "No rule to make target ../lib/libncursesw.a".
     local nc_src="${deps_build}/ncurses-${_NCURSES_VERSION}"
     if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a" ]]; then
         _info "Building ncurses ${_NCURSES_VERSION} ..."
@@ -797,23 +802,25 @@ _build_deps() {
             "ncurses-${_NCURSES_VERSION}.tar.gz" \
             "$nc_src"
         (
-            mkdir -p "${nc_src}/cross-build"
-            cd "${nc_src}/cross-build"
-            # --without-termlib: omit separate libtinfo; tinfo is compiled into
-            #   libncursesw.a directly. --with-termlib causes a ../lib/libtinfow.a
-            #   dependency that breaks out-of-tree cross-builds.
+            # Configure and build in-tree — do NOT use a separate build dir.
+            # Reset any previous in-tree configure state so a clean run works.
+            cd "$nc_src"
+            if [[ -f Makefile ]]; then
+                make distclean >> "${log_dir}/ncurses.log" 2>&1 || true
+            fi
+            # --without-termlib: compile tinfo directly into libncursesw.a;
+            #   avoids a separate libtinfow.a that in-tree builds need but that
+            #   breaks the relative ../lib/ references in generated makefiles.
             # --without-manpages: avoids needing nroff on the build host.
             # --disable-db-install: skip terminfo database (Termux ships its own).
-            # --without-fallbacks: do NOT invoke the host tic to pre-compile terminfo
-            #   entries into fallback.c — the macOS BSD tic fails writing to runner
-            #   tmp dirs. The device uses Termux terminfo; no embedded DB needed.
-            # --enable-widec: build libncursesw (wide-char), which Python prefers.
-            # -j1: ncurses has known parallel-build races in some sub-makes;
-            #   use single-threaded build to avoid intermittent failures.
+            # --without-fallbacks: do NOT invoke host tic to compile terminfo;
+            #   macOS BSD tic fails writing to runner tmp dirs.
+            # --enable-widec: build libncursesw (wide-char) which Python prefers.
+            # -j1: ncurses sub-makes use relative paths with known race conditions.
             export CC="${_cc}"
             export CFLAGS="${_cflags} -fPIC"
             export LDFLAGS="${_ldflags}"
-            "${nc_src}/configure" \
+            ./configure \
                 --prefix="${CROSS_DEPS_PREFIX}" \
                 --host="${TERMUX_HOST_PLATFORM}" \
                 --build="${TERMUX_BUILD_TUPLE}" \
@@ -834,20 +841,18 @@ _build_deps() {
             make install \
                 >> "${log_dir}/ncurses.log" 2>&1 \
                 || _die "ncurses install failed."
-            # Python's setup.py looks for ncurses headers in include/ncursesw/.
-            # ncurses installs them there with --enable-widec, but also create
-            # a plain include/ncurses/ symlink as a fallback.
-            if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
-                ln -sf "${CROSS_DEPS_PREFIX}/include/ncursesw" \
-                       "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
-            fi
-            # Also create libncurses.a -> libncursesw.a alias so configure
-            # probes that look for -lncurses (without the w) succeed.
-            if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncurses.a" ]]; then
-                ln -sf libncursesw.a \
-                       "${CROSS_DEPS_PREFIX}/lib/libncurses.a" 2>/dev/null || true
-            fi
         )
+        # Python's setup.py looks for curses.h under include/ncursesw/ (widec)
+        # or include/ncurses/. Create a plain ncurses/ alias for the latter.
+        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
+            ln -sf "${CROSS_DEPS_PREFIX}/include/ncursesw" \
+                   "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
+        fi
+        # libncurses.a alias: Python configure probes -lncurses (without 'w').
+        if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncurses.a" ]]; then
+            ln -sf libncursesw.a \
+                   "${CROSS_DEPS_PREFIX}/lib/libncurses.a" 2>/dev/null || true
+        fi
         _ok "ncurses built."
     else
         _info "ncurses already built — skipping."
