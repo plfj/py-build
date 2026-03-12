@@ -83,6 +83,29 @@ readonly _PATCHED_TARBALL="python-${TERMUX_PKG_VERSION}-patched-src.tar.xz"
 # Required extension modules that must survive post-install
 readonly -a _REQUIRED_MODULES=(_bz2 _curses _lzma _sqlite3 _ssl zlib)
 
+
+# ncurses version used by Termux
+_NCURSES_TERMUX_VERSION="6.5-2"
+
+# Termux repository
+_TERMUX_REPO="https://packages.termux.dev/apt/termux-main/pool/main/n/ncurses"
+
+# Architecture mapping
+case "${TERMUX_ARCH}" in
+    aarch64) _TERMUX_DEB_ARCH="aarch64" ;;
+    arm)     _TERMUX_DEB_ARCH="arm" ;;
+    x86_64)  _TERMUX_DEB_ARCH="x86_64" ;;
+    i686)    _TERMUX_DEB_ARCH="i686" ;;
+    *) _die "Unsupported arch: ${TERMUX_ARCH}" ;;
+esac
+
+_NCURSES_DEB_URL="${_TERMUX_REPO}/libncurses_${_NCURSES_TERMUX_VERSION}_${_TERMUX_DEB_ARCH}.deb"
+_NCURSES_HEADERS_DEB_URL="${_TERMUX_REPO}/ncurses-dev_${_NCURSES_TERMUX_VERSION}_${_TERMUX_DEB_ARCH}.deb"
+
+_NCURSES_DEB_SHA256=""
+_NCURSES_HEADERS_DEB_SHA256=""
+
+
 # =============================================================================
 # §2  OPTION FLAGS  (only boolean flags remain; everything else is env-driven)
 # =============================================================================
