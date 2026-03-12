@@ -195,25 +195,27 @@ _is_cross_compiling() {
 _setup_env() {
     # ── Prefix ────────────────────────────────────────────────────────────────
     # Workflow sets PREFIX=${{ github.workspace }}/prefix; pick that up.
-    [[ -z "${TERMUX_PREFIX:-}" ]] && \
+    if [[ -z "${TERMUX_PREFIX:-}" ]]; then
         export TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
+    fi
 
     # ── API level ─────────────────────────────────────────────────────────────
     # Workflow sets TERMUX_PKG_API_LEVEL=35 in env:
-    [[ -z "${TERMUX_PKG_API_LEVEL:-}" ]] && export TERMUX_PKG_API_LEVEL=35
+    if [[ -z "${TERMUX_PKG_API_LEVEL:-}" ]]; then export TERMUX_PKG_API_LEVEL=35; fi
 
     # ── Arch (detect then always normalise) ───────────────────────────────────
     # Workflow does not set TERMUX_ARCH; uname -m on macos-14 returns "arm64"
     # which _normalize_arch converts to "aarch64" — the correct Android target.
-    [[ -z "${TERMUX_ARCH:-}" ]] && { TERMUX_ARCH="$(uname -m)"; export TERMUX_ARCH; }
+    if [[ -z "${TERMUX_ARCH:-}" ]]; then TERMUX_ARCH="$(uname -m)"; export TERMUX_ARCH; fi
     TERMUX_ARCH="$(_normalize_arch "$TERMUX_ARCH")"
     export TERMUX_ARCH
 
     # ── Toolchain + package format ────────────────────────────────────────────
     # Workflow exports TERMUX_STANDALONE_TOOLCHAIN pointing at the NDK toolchain.
-    [[ -z "${TERMUX_STANDALONE_TOOLCHAIN:-}" ]] && \
+    if [[ -z "${TERMUX_STANDALONE_TOOLCHAIN:-}" ]]; then
         export TERMUX_STANDALONE_TOOLCHAIN="${TERMUX_PREFIX}"
-    [[ -z "${TERMUX_PACKAGE_FORMAT:-}" ]] && export TERMUX_PACKAGE_FORMAT="debian"
+    fi
+    if [[ -z "${TERMUX_PACKAGE_FORMAT:-}" ]]; then export TERMUX_PACKAGE_FORMAT="debian"; fi
 
     # ── On-device detection ───────────────────────────────────────────────────
     if [[ -z "${TERMUX_ON_DEVICE_BUILD:-}" ]]; then
@@ -271,8 +273,29 @@ _setup_env() {
     export TERMUX_PKG_SRCDIR TERMUX_PKG_BUILDDIR TERMUX_PKG_CACHEDIR OUTPUT_DIR
 
     # ── Source URL ────────────────────────────────────────────────────────────
-    [[ -z "${PATCHED_SOURCE_URL:-}" ]] && \
-        _die "PATCHED_SOURCE_URL is not set. Export it before running this script."
+    # Strip any leading/trailing whitespace or stray __ sentinel characters that
+    # GitHub Actions injects when a ${{ }} expression resolves to empty string
+    # (e.g. needs.job.outputs.key undefined -> "__https://...__").
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL:-}"
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL#__}"    # strip leading __
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL%__}"    # strip trailing __
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL// /}"   # strip spaces
+    export PATCHED_SOURCE_URL
+
+    if [[ -z "$PATCHED_SOURCE_URL" ]]; then
+        _die "PATCHED_SOURCE_URL is not set. Check that prepare-source exposes release_tag as a job output."
+    fi
+
+    # Reject values that don't look like an HTTP(S) URL — catches the case
+    # where ${{ needs.job.outputs.key }} resolved to empty and surrounding
+    # literal text collapsed into a non-URL string like
+    # '/releases/download//python-3.13.12-patched-src.tar.xz'.
+    if [[ "$PATCHED_SOURCE_URL" != http://* && "$PATCHED_SOURCE_URL" != https://* ]]; then
+        _die "PATCHED_SOURCE_URL does not look like a URL: '${PATCHED_SOURCE_URL}'. Check release_tag output."
+    fi
+
+    _info "Source URL: ${PATCHED_SOURCE_URL}"
+    return 0
 }
 
 # =============================================================================
@@ -286,6 +309,7 @@ _sha256() {
     else
         _die "No SHA-256 utility found (install coreutils or shasum)."
     fi
+    return 0
 }
 
 _download() {
@@ -355,7 +379,7 @@ _check_tools() {
     done
     # NOTE: (( expr )) exits 1 when expr==0, which trips set -e.
     # Use [[ ]] for the zero-check so a clean run never causes a false exit.
-    [[ "$missing" -eq 0 ]] || _die "${missing} required tool(s) missing — install them and retry."
+    if [[ "$missing" -ne 0 ]]; then _die "${missing} required tool(s) missing — install them and retry."; fi
     _ok "All required tools present."
 }
 
@@ -373,7 +397,7 @@ _setup_flags() {
     # ── CFLAGS ────────────────────────────────────────────────────────────────
     CFLAGS="${CFLAGS:-}"
     CFLAGS="${CFLAGS/-Oz/-O3}"                       # -Oz breaks Python on Android
-    [[ "$CFLAGS" =~ -O[0-9s] ]] || CFLAGS+=" -O3"
+    if [[ ! "$CFLAGS" =~ -O[0-9s] ]]; then CFLAGS+=" -O3"; fi
     CFLAGS+=" -fno-semantic-interposition"            # improves call-through-plt perf
 
     # ── LDFLAGS ───────────────────────────────────────────────────────────────
@@ -384,10 +408,10 @@ _setup_flags() {
     CPPFLAGS="${CPPFLAGS:-}"
     local _sysroot_inc="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/include"
     local _sysroot_lib="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/lib"
-    [[ -d "${_sysroot_inc}" ]] && CPPFLAGS+=" -I${_sysroot_inc}"
+    if [[ -d "${_sysroot_inc}" ]]; then CPPFLAGS+=" -I${_sysroot_inc}"; fi
     if [[ -d "${_sysroot_lib}" ]]; then
         local _lib_suffix=""
-        [[ "$TERMUX_ARCH" == "x86_64" ]] && _lib_suffix="64"
+        if [[ "$TERMUX_ARCH" == "x86_64" ]]; then _lib_suffix="64"; fi
         LDFLAGS+=" -L${_sysroot_lib}${_lib_suffix}"
     fi
 
@@ -514,10 +538,11 @@ _post_install() {
         install -m 644 "${debpython_src}/"* "$debpython_dst/"
         for prog in py3compile py3clean; do
             local prog_src="${TERMUX_PKG_SRCDIR}/debpython/${prog}"
-            [[ -f "$prog_src" ]] && install -m 755 "$prog_src" "${TERMUX_PREFIX}/bin/"
+            if [[ -f "$prog_src" ]]; then install -m 755 "$prog_src" "${TERMUX_PREFIX}/bin/"; fi
         done
         _ok "Installed debpython helpers."
     fi
+    return 0
 }
 
 # =============================================================================
@@ -542,7 +567,7 @@ _verify_modules() {
             (( failed++ )) || true
         fi
     done
-    [[ "$failed" -eq 0 ]] || _die "${failed} required module(s) missing."
+    if [[ "$failed" -ne 0 ]]; then _die "${failed} required module(s) missing."; fi
     _ok "All required modules present."
 }
 
@@ -728,7 +753,7 @@ main() {
     shopt -s nullglob
     local -a sp_files=("${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/site-packages/"*)
     shopt -u nullglob
-    [[ "${#sp_files[@]}" -gt 0 ]] && rm -rf "${sp_files[@]}"
+    if [[ "${#sp_files[@]}" -gt 0 ]]; then rm -rf "${sp_files[@]}"; fi
 
     if [[ "$_OPT_NO_DEB" == "true" ]]; then
         _warn "--no-deb set; skipping .deb packaging."
