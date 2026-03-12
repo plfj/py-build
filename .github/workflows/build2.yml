@@ -104,25 +104,44 @@ jobs:
     needs: prepare-source
 
     env:
+      # ── Android SDK / NDK ────────────────────────────────────────────────────
       ANDROID_HOME:         ${{ github.workspace }}/android-sdk
-      PREFIX:               ${{ github.workspace }}/prefix
+      ANDROID_NDK_VERSION:  "27.3.13750724"   # LTS release — ships darwin-x86_64 toolchain
       ANDROID_SDK_VERSION:  "35"
       ANDROID_BUILD_TOOLS:  "35.0.0"
+      # ── Termux target ────────────────────────────────────────────────────────
       TERMUX_PKG_API_LEVEL: "35"
+      TERMUX_ARCH:          "aarch64"          # canonical form expected by build.sh
+      # ── Python package version (must match build.sh TERMUX_PKG_VERSION) ─────
+      PYTHON_VERSION:       "3.13.12"
+      # ── Install prefix — picked up by build.sh via $PREFIX fallback ─────────
+      PREFIX:               ${{ github.workspace }}/prefix
 
     steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ── 2. Host dependencies ─────────────────────────────────────────────────
+      # gnu-tar   : build.sh uses 'tar -xJf' and '_create_deb' uses tar; BSD tar
+      #             supports -J only with a separate xz binary — simpler to have
+      #             gtar available for the unpack step too.
+      # xz        : used directly in _create_deb when dpkg-deb is absent.
+      # binutils  : provides GNU 'gar' (ar) for building the .deb ar archive;
+      #             BSD ar also works but GNU ar is safer for cross-platform debs.
+      # nproc     : part of coreutils — used by _detect_cpu_count in build.sh.
       - name: Install host dependencies
         run: |
           set -euo pipefail
           brew install --quiet \
             wget curl git unzip make pkg-config \
-            coreutils gawk xz \
+            coreutils gawk xz gnu-tar binutils \
             openssl sqlite readline zlib libffi
+          # Prepend GNU tool paths so nproc, gtar, gar etc. shadow BSD equivalents
           {
             echo "/opt/homebrew/opt/coreutils/libexec/gnubin"
+            echo "/opt/homebrew/opt/gnu-tar/libexec/gnubin"
+            echo "/opt/homebrew/opt/binutils/bin"
             echo "/opt/homebrew/opt/openssl/bin"
           } >> "$GITHUB_PATH"
           {
@@ -131,9 +150,11 @@ jobs:
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
+      # ── 3. Android SDK ───────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      # ── 4. NDK ───────────────────────────────────────────────────────────────
       - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
         run: |
           set -euxo pipefail
@@ -145,6 +166,10 @@ jobs:
             "ndk;${ANDROID_NDK_VERSION}"
           ls -1 "$ANDROID_HOME/ndk/"
 
+      # ── 5. Cross-compile environment ─────────────────────────────────────────
+      # NDK 27 ships ONLY darwin-x86_64; it runs via Rosetta 2 on Apple Silicon.
+      # ANDROID_API_LEVEL is exported here so the clang target triple is built
+      # from the same value as TERMUX_PKG_API_LEVEL (they must match).
       - name: Configure NDK cross-compilation environment
         run: |
           set -euo pipefail
@@ -152,12 +177,14 @@ jobs:
           PREBUILT="$NDK_PATH/toolchains/llvm/prebuilt"
           echo "=== Available prebuilt toolchains ===" && ls "$PREBUILT"
 
-          # NDK 27 ships ONLY darwin-x86_64; runs via Rosetta 2 on Apple Silicon.
           if   [ -d "$PREBUILT/darwin-x86_64" ]; then TOOLCHAIN="$PREBUILT/darwin-x86_64"
           elif [ -d "$PREBUILT/darwin-arm64"  ]; then TOOLCHAIN="$PREBUILT/darwin-arm64"
           else echo "No NDK toolchain found under $PREBUILT"; exit 1; fi
 
           SYSROOT="$TOOLCHAIN/sysroot"
+
+          # Use the same API level for the clang target triple as Termux uses.
+          ANDROID_API_LEVEL="${TERMUX_PKG_API_LEVEL}"
           TARGET="aarch64-linux-android${ANDROID_API_LEVEL}"
           CC_BIN="$TOOLCHAIN/bin/${TARGET}-clang"
           CXX_BIN="$TOOLCHAIN/bin/${TARGET}-clang++"
@@ -166,6 +193,7 @@ jobs:
           [ -x "$CXX_BIN" ] || { echo "CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
           echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
+
           {
             echo "CC=$CC_BIN"
             echo "CXX=$CXX_BIN"
@@ -178,13 +206,16 @@ jobs:
             echo "OBJDUMP=$TOOLCHAIN/bin/llvm-objdump"
             echo "SYSROOT=$SYSROOT"
             echo "ANDROID_NDK_HOME=$NDK_PATH"
+            echo "ANDROID_API_LEVEL=$ANDROID_API_LEVEL"
             echo "CFLAGS=--sysroot=$SYSROOT -target $TARGET"
             echo "CXXFLAGS=--sysroot=$SYSROOT -target $TARGET"
             echo "LDFLAGS=--sysroot=$SYSROOT -fuse-ld=lld"
             echo "ANDROID_BUILD_TARGET=$TARGET"
             echo "TERMUX_STANDALONE_TOOLCHAIN=$TOOLCHAIN"
+            echo "TERMUX_PREFIX=${{ github.workspace }}/prefix"
           } >> "$GITHUB_ENV"
 
+      # ── 6. Smoke-test the cross-compiler ─────────────────────────────────────
       - name: Verify cross-compiler
         run: |
           set -euo pipefail
@@ -194,13 +225,14 @@ jobs:
             && echo "Cross-compile smoke test passed" \
             || { echo "Cross-compile smoke test FAILED"; exit 1; }
 
+      # ── 7. Prefix directory ───────────────────────────────────────────────────
       - name: Prepare output prefix
-        run: mkdir -p "$PREFIX"
+        run: mkdir -p "${{ github.workspace }}/prefix"
 
-      # Download the patched source tarball directly from the release asset.
-      # softprops/action-gh-release outputs a JSON array of uploaded assets;
-      # we construct the URL from the known tag + filename instead, which is
-      # stable and requires no JSON parsing across jobs.
+      # ── 8. Build ─────────────────────────────────────────────────────────────
+      # PATCHED_SOURCE_URL is constructed from the release tag produced by the
+      # prepare-source job.  build.sh auto-skips module verification because it
+      # detects a cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
           PATCHED_SOURCE_URL: https://github.com/${{ github.repository }}/releases/download/${{ needs.prepare-source.outputs.release_tag }}/python-${{ env.PYTHON_VERSION }}-patched-src.tar.xz
@@ -211,12 +243,14 @@ jobs:
           chmod +x build.sh
           ./build.sh
 
+      # ── 9. Show artifacts ─────────────────────────────────────────────────────
       - name: Show build output
         if: always()
         run: |
-          echo "=== prefix/bin ===" && ls -lh "$PREFIX/bin" 2>/dev/null || echo "(empty)"
-          echo "=== dist/ ==="      && ls -lh dist/          2>/dev/null || echo "(empty)"
+          echo "=== prefix/bin ===" && ls -lh "${{ github.workspace }}/prefix/bin" 2>/dev/null || echo "(empty)"
+          echo "=== dist/ ==="      && ls -lh dist/                                2>/dev/null || echo "(empty)"
 
+      # ── 10. Upload .deb to release ────────────────────────────────────────────
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
