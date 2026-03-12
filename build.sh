@@ -400,19 +400,55 @@ _setup_flags() {
     if [[ ! "$CFLAGS" =~ -O[0-9s] ]]; then CFLAGS+=" -O3"; fi
     CFLAGS+=" -fno-semantic-interposition"            # improves call-through-plt perf
 
+    # Ensure --sysroot is in CFLAGS for clang's include resolution.
+    # The workflow puts it there, but guard in case of local dev without workflow env.
+    if [[ -n "${SYSROOT:-}" ]] && [[ "$CFLAGS" != *--sysroot* ]]; then
+        CFLAGS+=" --sysroot=${SYSROOT}"
+    fi
+
+    # Ensure -target is in CFLAGS. Required for NDK clang to emit Android ELF.
+    if [[ -n "${ANDROID_BUILD_TARGET:-}" ]] && [[ "$CFLAGS" != *-target* ]]; then
+        CFLAGS+=" -target ${ANDROID_BUILD_TARGET}"
+    fi
+
     # ── LDFLAGS ───────────────────────────────────────────────────────────────
     LDFLAGS="${LDFLAGS:-}"
     LDFLAGS="${LDFLAGS//-Wl,--as-needed/}"            # breaks extension module linking
 
+    # Ensure --sysroot is in LDFLAGS for the linker (lld) to find Android libc.
+    if [[ -n "${SYSROOT:-}" ]] && [[ "$LDFLAGS" != *--sysroot* ]]; then
+        LDFLAGS+=" --sysroot=${SYSROOT}"
+    fi
+
+    # Use lld — GNU ld cannot link Android ELF correctly on a macOS host.
+    if [[ "$LDFLAGS" != *-fuse-ld* ]]; then
+        LDFLAGS+=" -fuse-ld=lld"
+    fi
+
     # ── CPPFLAGS + sysroot include / lib ─────────────────────────────────────
     CPPFLAGS="${CPPFLAGS:-}"
-    local _sysroot_inc="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/include"
-    local _sysroot_lib="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot/usr/lib"
-    if [[ -d "${_sysroot_inc}" ]]; then CPPFLAGS+=" -I${_sysroot_inc}"; fi
-    if [[ -d "${_sysroot_lib}" ]]; then
-        local _lib_suffix=""
-        if [[ "$TERMUX_ARCH" == "x86_64" ]]; then _lib_suffix="64"; fi
-        LDFLAGS+=" -L${_sysroot_lib}${_lib_suffix}"
+    local _sysroot="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot"
+    local _sysroot_inc="${_sysroot}/usr/include"
+    # NDK 27 layout: usr/lib/<triple>/  (arch-specific subdir)
+    # Also add usr/lib/<triple>/<api>/ for versioned stubs.
+    local _sysroot_lib_base="${_sysroot}/usr/lib"
+    local _sysroot_lib_arch="${_sysroot_lib_base}/${TERMUX_HOST_PLATFORM}"
+    local _sysroot_lib_api="${_sysroot_lib_arch}/${TERMUX_PKG_API_LEVEL}"
+    if [[ -d "${_sysroot_inc}" ]]; then
+        CPPFLAGS+=" -I${_sysroot_inc}"
+        # Arch-specific headers (e.g. asm/)
+        if [[ -d "${_sysroot_inc}/${TERMUX_HOST_PLATFORM}" ]]; then
+            CPPFLAGS+=" -I${_sysroot_inc}/${TERMUX_HOST_PLATFORM}"
+        fi
+    fi
+    if [[ -d "${_sysroot_lib_api}" ]]; then
+        LDFLAGS+=" -L${_sysroot_lib_api}"
+    fi
+    if [[ -d "${_sysroot_lib_arch}" ]]; then
+        LDFLAGS+=" -L${_sysroot_lib_arch}"
+    fi
+    if [[ -d "${_sysroot_lib_base}" ]]; then
+        LDFLAGS+=" -L${_sysroot_lib_base}"
     fi
 
     # ── On-device: explicit API level define ──────────────────────────────────
@@ -448,10 +484,10 @@ _setup_flags() {
     # ── configure feature flags ───────────────────────────────────────────────
     CONF_FLAGS="${CONF_FLAGS:-}"
     CONF_FLAGS+=" --with-build-python=${_BUILD_PYTHON}"
-    CONF_FLAGS+=" --with-system-ffi"
-    CONF_FLAGS+=" --with-system-expat"
+    # --with-system-ffi removed in Python 3.13; libffi is always external now.
+    # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
     CONF_FLAGS+=" --without-ensurepip"
-    CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
+    # --enable-loadable-sqlite-extensions omitted: sqlite3 not in NDK sysroot.
 
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -485,7 +521,10 @@ _setup_flags() {
     fi
 
     # ── polyfill libraries ────────────────────────────────────────────────────
-    LDFLAGS+=" -landroid-posix-semaphore -landroid-spawn"
+    # These libs live in $TERMUX_PREFIX/lib and do NOT exist at configure time.
+    # Passing them in LDFLAGS causes configure's compiler-executability test to fail.
+    # We keep them in PYTHON_EXTRA_LDFLAGS and inject them only during make.
+    export PYTHON_EXTRA_LDFLAGS="-landroid-posix-semaphore -landroid-spawn"
     export LIBCRYPT_LIBS="-lcrypt"
     export CFLAGS CPPFLAGS LDFLAGS CONF_CACHE CONF_FLAGS
 }
@@ -497,6 +536,15 @@ _do_configure() {
     mkdir -p "$TERMUX_PKG_BUILDDIR"
     cd "$TERMUX_PKG_BUILDDIR"
     _info "Running ./configure ..."
+
+    # Log the exact compiler and flags so failures are easy to diagnose.
+    _info "  CC:      ${CC:-<unset>}"
+    _info "  CXX:     ${CXX:-<unset>}"
+    _info "  CFLAGS:  ${CFLAGS:-<unset>}"
+    _info "  LDFLAGS: ${LDFLAGS:-<unset>}"
+
+    # CONF_CACHE entries are word-split intentionally (each is a key=value token).
+    # CONF_FLAGS entries likewise. SC2086 is suppressed for both.
     # shellcheck disable=SC2086
     "${TERMUX_PKG_SRCDIR}/configure" \
         --prefix="${TERMUX_PREFIX}"        \
@@ -505,6 +553,11 @@ _do_configure() {
         --enable-shared                    \
         ${CONF_CACHE}                      \
         ${CONF_FLAGS}                      \
+        CC="${CC:-clang}"                  \
+        CXX="${CXX:-clang++}"              \
+        AR="${AR:-llvm-ar}"                \
+        RANLIB="${RANLIB:-llvm-ranlib}"    \
+        STRIP="${STRIP:-llvm-strip}"       \
         CFLAGS="${CFLAGS}"                 \
         CPPFLAGS="${CPPFLAGS}"             \
         LDFLAGS="${LDFLAGS}"               \
@@ -728,7 +781,11 @@ main() {
     _section "Step 7/10 — Build"
     _info "make -j${TERMUX_PKG_MAKE_PROCESSES} ..."
     cd "$TERMUX_PKG_BUILDDIR"
-    make -j"${TERMUX_PKG_MAKE_PROCESSES}" || _die "make failed."
+    # PYTHON_EXTRA_LDFLAGS: polyfill libs not available at configure time;
+    # inject here so they are present during the actual link step.
+    make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+        LDFLAGS="${LDFLAGS} ${PYTHON_EXTRA_LDFLAGS:-}" \
+        || _die "make failed."
     _ok "Build complete."
 
     _section "Step 8/10 — Install"
