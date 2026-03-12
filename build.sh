@@ -521,11 +521,41 @@ _setup_flags() {
     fi
 
     # ── polyfill libraries ────────────────────────────────────────────────────
-    # These libs live in $TERMUX_PREFIX/lib and do NOT exist at configure time.
-    # Passing them in LDFLAGS causes configure's compiler-executability test to fail.
-    # We keep them in PYTHON_EXTRA_LDFLAGS and inject them only during make.
-    export PYTHON_EXTRA_LDFLAGS="-landroid-posix-semaphore -landroid-spawn"
-    export LIBCRYPT_LIBS="-lcrypt"
+    # libandroid-posix-semaphore: named semaphores polyfill for API < 30.
+    # libandroid-spawn:           posix_spawn polyfill for API < 28.
+    # Both are Termux-installed packages; they do NOT exist in the NDK sysroot
+    # and must not be linked on a CI cross-compile where TERMUX_PREFIX is empty.
+    # At API >= 30 bionic provides named semaphores natively.
+    # At API >= 28 bionic provides posix_spawn natively.
+    PYTHON_EXTRA_LDFLAGS=""
+    if (( TERMUX_PKG_API_LEVEL < 30 )); then
+        if [[ -f "${TERMUX_PREFIX}/lib/libandroid-posix-semaphore.a" ]] || \
+           [[ -f "${TERMUX_PREFIX}/lib/libandroid-posix-semaphore.so" ]]; then
+            PYTHON_EXTRA_LDFLAGS+=" -landroid-posix-semaphore"
+            LDFLAGS+=" -L${TERMUX_PREFIX}/lib"
+        else
+            _warn "libandroid-posix-semaphore not found in ${TERMUX_PREFIX}/lib — skipping (API ${TERMUX_PKG_API_LEVEL} >= 28, native sem_open available)"
+        fi
+    fi
+    if (( TERMUX_PKG_API_LEVEL < 28 )); then
+        if [[ -f "${TERMUX_PREFIX}/lib/libandroid-spawn.a" ]] || \
+           [[ -f "${TERMUX_PREFIX}/lib/libandroid-spawn.so" ]]; then
+            PYTHON_EXTRA_LDFLAGS+=" -landroid-spawn"
+        else
+            _warn "libandroid-spawn not found in ${TERMUX_PREFIX}/lib — skipping (API ${TERMUX_PKG_API_LEVEL} >= 28, native posix_spawn available)"
+        fi
+    fi
+    export PYTHON_EXTRA_LDFLAGS
+    # libcrypt: not in NDK sysroot; only present inside a Termux install.
+    # The crypt module is removed in Python 3.13, so this is only needed for
+    # third-party packages that link against libcrypt. Skip on CI.
+    if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]] || \
+       [[ -f "${TERMUX_PREFIX}/lib/libcrypt.a" ]] || \
+       [[ -f "${TERMUX_PREFIX}/lib/libcrypt.so" ]]; then
+        export LIBCRYPT_LIBS="-lcrypt"
+    else
+        export LIBCRYPT_LIBS=""
+    fi
     export CFLAGS CPPFLAGS LDFLAGS CONF_CACHE CONF_FLAGS
 }
 
