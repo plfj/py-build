@@ -730,16 +730,50 @@ _build_deps() {
                 i686)    ossl_target="android-x86"    ;;
                 *)       _die "Unknown arch for OpenSSL: ${TERMUX_ARCH}" ;;
             esac
-            # OpenSSL's Configure script needs ANDROID_NDK_ROOT set to the NDK root
-            # (the ndk/<version> directory), not the toolchain subdirectory.
+
+            # OpenSSL's Configure does NOT accept CFLAGS=, LDFLAGS=, CC= as
+            # positional arguments — doing so is a fatal error ("Mixing make
+            # variables"). CC, CFLAGS, LDFLAGS must be exported as env vars.
+            #
+            # With ANDROID_NDK_ROOT set, OpenSSL's android-* targets auto-select
+            # the correct NDK clang and set --sysroot / -target themselves.
+            # We export CC to pin the exact versioned clang the workflow selected,
+            # but we do NOT pass --sysroot or -target in CFLAGS because OpenSSL
+            # already injects them. Passing them twice causes duplicate-flag warnings
+            # and can confuse the linker.
+            #
+            # Strip --sysroot and -target from CFLAGS: OpenSSL's android-*
+            # platform target injects both from ANDROID_NDK_ROOT itself.
+            # Passing them twice causes duplicate-flag errors.
+            local ossl_cflags_clean=""
+            local _skip_next=false
+            for _tok in ${_cflags}; do
+                if [[ "$_skip_next" == "true" ]]; then
+                    _skip_next=false; continue
+                fi
+                # -target <triple>: two-token form
+                if [[ "$_tok" == "-target" ]]; then
+                    _skip_next=true; continue
+                fi
+                # --sysroot=<path>: single-token form
+                if [[ "$_tok" == --sysroot=* ]]; then continue; fi
+                # --sysroot <path>: two-token form
+                if [[ "$_tok" == "--sysroot" ]]; then
+                    _skip_next=true; continue
+                fi
+                ossl_cflags_clean="${ossl_cflags_clean} ${_tok}"
+            done
+            local ossl_cflags="${ossl_cflags_clean}"
+
             export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+            export CC="${_cc}"
+            export CFLAGS="${ossl_cflags} -fPIC"
+            export LDFLAGS="${_ldflags}"
+
             perl Configure "${ossl_target}" \
                 "-D__ANDROID_API__=${TERMUX_PKG_API_LEVEL}" \
                 "--prefix=${CROSS_DEPS_PREFIX}" \
                 no-shared no-tests no-ui-console \
-                "CFLAGS=${_cflags} -fPIC" \
-                "LDFLAGS=${_ldflags}" \
-                "CC=${_cc}" \
                 > "${log_dir}/openssl.log" 2>&1 \
                 || { cat "${log_dir}/openssl.log"; _die "openssl configure failed."; }
             make -j"${TERMUX_PKG_MAKE_PROCESSES}" build_sw \
