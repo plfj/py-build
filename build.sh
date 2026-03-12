@@ -353,7 +353,9 @@ _check_tools() {
             (( missing++ )) || true
         fi
     done
-    (( missing > 0 )) && _die "${missing} required tool(s) missing — install them and retry."
+    # NOTE: (( expr )) exits 1 when expr==0, which trips set -e.
+    # Use [[ ]] for the zero-check so a clean run never causes a false exit.
+    [[ "$missing" -eq 0 ]] || _die "${missing} required tool(s) missing — install them and retry."
     _ok "All required tools present."
 }
 
@@ -540,7 +542,7 @@ _verify_modules() {
             (( failed++ )) || true
         fi
     done
-    (( failed > 0 )) && _die "${failed} required module(s) missing."
+    [[ "$failed" -eq 0 ]] || _die "${failed} required module(s) missing."
     _ok "All required modules present."
 }
 
@@ -726,7 +728,7 @@ main() {
     shopt -s nullglob
     local -a sp_files=("${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/site-packages/"*)
     shopt -u nullglob
-    (( ${#sp_files[@]} > 0 )) && rm -rf "${sp_files[@]}"
+    [[ "${#sp_files[@]}" -gt 0 ]] && rm -rf "${sp_files[@]}"
 
     if [[ "$_OPT_NO_DEB" == "true" ]]; then
         _warn "--no-deb set; skipping .deb packaging."
