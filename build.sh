@@ -802,11 +802,11 @@ _build_deps() {
             # --without-termlib: omit separate libtinfo; tinfo is compiled into
             #   libncursesw.a directly. --with-termlib causes a ../lib/libtinfow.a
             #   dependency that breaks out-of-tree cross-builds.
-            # --without-manpages: avoids needing tic/nroff on the build host.
-            # --disable-db-install: skip terminfo database (not needed on device;
-            #   Termux ships its own).
-            # --with-fallbacks: embed minimal terminfo entries so the curses module
-            #   works on devices that lack a terminfo database at the expected path.
+            # --without-manpages: avoids needing nroff on the build host.
+            # --disable-db-install: skip terminfo database (Termux ships its own).
+            # --without-fallbacks: do NOT invoke the host tic to pre-compile terminfo
+            #   entries into fallback.c — the macOS BSD tic fails writing to runner
+            #   tmp dirs. The device uses Termux terminfo; no embedded DB needed.
             # --enable-widec: build libncursesw (wide-char), which Python prefers.
             # -j1: ncurses has known parallel-build races in some sub-makes;
             #   use single-threaded build to avoid intermittent failures.
@@ -824,7 +824,7 @@ _build_deps() {
                 --without-progs --without-tests \
                 --without-manpages \
                 --disable-db-install \
-                --with-fallbacks=linux,xterm,xterm-256color \
+                --without-fallbacks \
                 --disable-stripping \
                 > "${log_dir}/ncurses.log" 2>&1 \
                 || { cat "${log_dir}/ncurses.log"; _die "ncurses configure failed."; }
