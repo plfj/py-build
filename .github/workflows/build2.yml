@@ -245,7 +245,7 @@ jobs:
       # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          RELEASE_TAG:  ${{ needs.prepare-source.outputs.release_tag }}
+          RELEASE_TAG:  frt
           OUTPUT_DIR:   ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
