@@ -806,8 +806,9 @@ _build_deps() {
     # We extract libncursesw.so (+ symlinks) and headers from the official Termux
     # aarch64 .deb and link Python's _curses extension against the shared lib.
     # The .so is present on every Termux installation via the ncurses package.
-    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so" ]] && \
-       [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a"  ]]; then
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so"         ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/include/curses.h"           ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/include/ncursesw/curses.h"  ]]; then
         _info "Extracting ncurses from Termux .deb ..."
         # Termux package names (confirmed as of 6.5.20240831-2):
         #   ncurses_<ver>_aarch64.deb        — libncursesw.so + compat symlinks

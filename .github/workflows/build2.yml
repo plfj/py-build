@@ -120,7 +120,7 @@ jobs:
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v6
+        uses: actions/checkout@v4
 
       # ── 2. Host dependencies ─────────────────────────────────────────────────
       # gnu-tar   : build.sh uses 'tar -xJf' and '_create_deb' uses tar; BSD tar
@@ -235,7 +235,20 @@ jobs:
       # deps/ but the source tree is present, make could pick it up erroneously.
       # Nuke deps-build/ (not deps/ — we want to keep downloaded/extracted libs).
       - name: Clean stale dependency build trees
-        run: rm -rf /tmp/python-build/deps-build /private/tmp/python-build/deps-build
+        run: |
+          rm -rf /tmp/python-build/deps-build /private/tmp/python-build/deps-build
+          # Also remove any ncurses artifacts from a previous partial run so the
+          # extraction + header-shim logic always reruns with a clean slate.
+          rm -f  /tmp/python-build/deps/lib/libncurses*.{a,so}* \
+                 /tmp/python-build/deps/include/curses.h \
+                 /tmp/python-build/deps/include/ncurses.h \
+                 /tmp/python-build/deps/include/ncursesw \
+                 /tmp/python-build/deps/include/ncurses \
+                 /private/tmp/python-build/deps/lib/libncurses*.{a,so}* \
+                 /private/tmp/python-build/deps/include/curses.h \
+                 /private/tmp/python-build/deps/include/ncursesw \
+                 /private/tmp/python-build/deps/include/ncurses \
+                 2>/dev/null || true
 
       # ── 9. Build ─────────────────────────────────────────────────────────────
       # PATCHED_SOURCE_URL is constructed inside the run: shell so that any
@@ -245,7 +258,7 @@ jobs:
       # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          RELEASE_TAG:  frt
+          RELEASE_TAG:  ${{ needs.prepare-source.outputs.release_tag }}
           OUTPUT_DIR:   ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
