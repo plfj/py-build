@@ -589,8 +589,12 @@ _OPENSSL_VERSION="3.4.1"
 # To update: browse https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses/
 # and https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses-static/
 # and set both to the same version string (e.g. 6.5.20240831-2).
-_NCURSES_TERMUX_VERSION="6.5.20240831-2"
-_NCURSES_TERMUX_BASE_URL="https://packages-cf.termux.dev/apt/termux-main/pool/main/n"
+# Version string uses Termux's epoch+snapshot convention:
+#   6.6.20260124+really6.5.20250830
+# The URL-encoded form replaces '+' with '%2B'. Both forms are set here.
+_NCURSES_TERMUX_VERSION="6.6.20260124+really6.5.20250830"
+_NCURSES_TERMUX_VERSION_URL="6.6.20260124%2Breally6.5.20250830"
+_NCURSES_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/n"
 
 _build_deps() {
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
@@ -813,8 +817,12 @@ _build_deps() {
         local _nc_arch="${TERMUX_HOST_PLATFORM%%-*}"  # aarch64 from aarch64-linux-android
         local nc_lib_deb="${TERMUX_PKG_CACHEDIR}/ncurses.deb"
         local nc_static_deb="${TERMUX_PKG_CACHEDIR}/ncurses-static.deb"
-        _download             "${_NCURSES_TERMUX_BASE_URL}/ncurses/ncurses_${_NCURSES_TERMUX_VERSION}_${_nc_arch}.deb"             "$nc_lib_deb"
-        _download             "${_NCURSES_TERMUX_BASE_URL}/ncurses-static/ncurses-static_${_NCURSES_TERMUX_VERSION}_${_nc_arch}.deb"             "$nc_static_deb"
+        _download \
+            "${_NCURSES_TERMUX_BASE_URL}/ncurses/ncurses_${_NCURSES_TERMUX_VERSION_URL}_${_nc_arch}.deb" \
+            "$nc_lib_deb"
+        _download \
+            "${_NCURSES_TERMUX_BASE_URL}/ncurses-static/ncurses-static_${_NCURSES_TERMUX_VERSION_URL}_${_nc_arch}.deb" \
+            "$nc_static_deb"
 
         local nc_extract="${deps_build}/ncurses-deb"
         rm -rf "$nc_extract"
