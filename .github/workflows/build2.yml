@@ -251,9 +251,8 @@ jobs:
                  2>/dev/null || true
 
       # ── 9. Build ─────────────────────────────────────────────────────────────
-      # PATCHED_SOURCE_URL is constructed inside the run: shell so that any
-      # missing ${{ }} expression (e.g. release_tag undefined) is caught with
-      # a clear error before build.sh ever runs.
+      # The patched source tarball lives under the permanent tag 'frt', not
+      # under the per-run release tag produced by prepare-source.
       # build.sh auto-skips module verification because it detects a
       # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
@@ -263,14 +262,17 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Validate that prepare-source actually exported a release tag.
+          # Validate that prepare-source actually exported a release tag
+          # (still needed for the .deb upload step below).
           if [[ -z "${RELEASE_TAG:-}" ]]; then
             echo "ERROR: RELEASE_TAG is empty — prepare-source job did not expose release_tag as an output."
             exit 1
           fi
 
-          # Build and export the source URL explicitly so it is visible in the log.
-          export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/python-${PYTHON_VERSION}-patched-src.tar.xz"
+          # The patched source tarball is uploaded under the permanent tag 'frt',
+          # independent of the per-run release tag. Update 'frt' here if you ever
+          # re-upload the tarball under a different tag.
+          export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/frt/python-${PYTHON_VERSION}-patched-src.tar.xz"
           echo "PATCHED_SOURCE_URL=${PATCHED_SOURCE_URL}"
 
           mkdir -p dist
