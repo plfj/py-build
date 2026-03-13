@@ -83,29 +83,6 @@ readonly _PATCHED_TARBALL="python-${TERMUX_PKG_VERSION}-patched-src.tar.xz"
 # Required extension modules that must survive post-install
 readonly -a _REQUIRED_MODULES=(_bz2 _curses _lzma _sqlite3 _ssl zlib)
 
-
-# ncurses version used by Termux
-_NCURSES_TERMUX_VERSION="6.5-2"
-
-# Termux repository
-_TERMUX_REPO="https://packages.termux.dev/apt/termux-main/pool/main/n/ncurses"
-
-# Architecture mapping
-case "${TERMUX_ARCH}" in
-    aarch64) _TERMUX_DEB_ARCH="aarch64" ;;
-    arm)     _TERMUX_DEB_ARCH="arm" ;;
-    x86_64)  _TERMUX_DEB_ARCH="x86_64" ;;
-    i686)    _TERMUX_DEB_ARCH="i686" ;;
-    *) _die "Unsupported arch: ${TERMUX_ARCH}" ;;
-esac
-
-_NCURSES_DEB_URL="${_TERMUX_REPO}/libncurses_${_NCURSES_TERMUX_VERSION}_${_TERMUX_DEB_ARCH}.deb"
-_NCURSES_HEADERS_DEB_URL="${_TERMUX_REPO}/ncurses-dev_${_NCURSES_TERMUX_VERSION}_${_TERMUX_DEB_ARCH}.deb"
-
-_NCURSES_DEB_SHA256=""
-_NCURSES_HEADERS_DEB_SHA256=""
-
-
 # =============================================================================
 # §2  OPTION FLAGS  (only boolean flags remain; everything else is env-driven)
 # =============================================================================
@@ -609,9 +586,11 @@ _XZ_VERSION="5.6.3"
 _SQLITE_VERSION="3470200"    # 3.47.2  (YYYYMMDD0 autoconf tarball naming)
 _OPENSSL_VERSION="3.4.1"
 # Termux ncurses version to fetch. The arch is substituted at runtime.
-# To update: browse https://packages.termux.dev/apt/termux-main/pool/main/n/ncurses/
-# find the latest libncurses_*_<arch>.deb and ncurses-dev_*_<arch>.deb.
-_NCURSES_TERMUX_VERSION="6.5-2"
+# To update: browse https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses/
+# and https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses-static/
+# and set both to the same version string (e.g. 6.5.20240831-2).
+_NCURSES_TERMUX_VERSION="6.5.20240831-2"
+_NCURSES_TERMUX_BASE_URL="https://packages-cf.termux.dev/apt/termux-main/pool/main/n"
 
 _build_deps() {
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
@@ -826,17 +805,23 @@ _build_deps() {
     if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so" ]] && \
        [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.a"  ]]; then
         _info "Extracting ncurses from Termux .deb ..."
-        local nc_lib_deb="${TERMUX_PKG_CACHEDIR}/libncurses.deb"
-        local nc_dev_deb="${TERMUX_PKG_CACHEDIR}/ncurses-dev.deb"
-        _download "${_NCURSES_DEB_URL}"         "$nc_lib_deb" "${_NCURSES_DEB_SHA256}"
-        _download "${_NCURSES_HEADERS_DEB_URL}" "$nc_dev_deb" "${_NCURSES_HEADERS_DEB_SHA256}"
+        # Termux package names (confirmed as of 6.5.20240831-2):
+        #   ncurses_<ver>_aarch64.deb        — libncursesw.so + compat symlinks
+        #   ncurses-static_<ver>_aarch64.deb — libncursesw.a + all headers
+        # There is no "libncurses" or "ncurses-dev" package; everything we need
+        # is split between these two.
+        local _nc_arch="${TERMUX_HOST_PLATFORM%%-*}"  # aarch64 from aarch64-linux-android
+        local nc_lib_deb="${TERMUX_PKG_CACHEDIR}/ncurses.deb"
+        local nc_static_deb="${TERMUX_PKG_CACHEDIR}/ncurses-static.deb"
+        _download             "${_NCURSES_TERMUX_BASE_URL}/ncurses/ncurses_${_NCURSES_TERMUX_VERSION}_${_nc_arch}.deb"             "$nc_lib_deb"
+        _download             "${_NCURSES_TERMUX_BASE_URL}/ncurses-static/ncurses-static_${_NCURSES_TERMUX_VERSION}_${_nc_arch}.deb"             "$nc_static_deb"
 
         local nc_extract="${deps_build}/ncurses-deb"
         rm -rf "$nc_extract"
         mkdir -p "$nc_extract"
 
         # Extract both .deb archives (standard ar + data.tar.*)
-        for deb in "$nc_lib_deb" "$nc_dev_deb"; do
+        for deb in "$nc_lib_deb" "$nc_static_deb"; do
             local deb_tmp="${nc_extract}/tmp_$(basename "$deb")"
             mkdir -p "$deb_tmp"
             (
