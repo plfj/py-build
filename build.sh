@@ -858,17 +858,47 @@ _build_deps() {
 
         install -d "${CROSS_DEPS_PREFIX}/include" "${CROSS_DEPS_PREFIX}/lib"
 
-        # Copy headers (ncursesw/ directory)
+        # ── Headers ──────────────────────────────────────────────────────────
+        # Termux ncurses-static ships headers in two places:
+        #   include/ncursesw/curses.h   — the canonical widec header
+        #   include/curses.h            — thin shim: #include <ncursesw/curses.h>
+        #   include/ncurses.h           — same shim
+        # Python's _cursesmodule.c does #include <curses.h>, so the flat shim
+        # MUST exist at the top of the include search path.
+
+        # 1. Copy the ncursesw/ subdirectory (canonical headers)
         if [[ -d "${termux_usr}/include/ncursesw" ]]; then
             cp -a "${termux_usr}/include/ncursesw" "${CROSS_DEPS_PREFIX}/include/"
-            _info "  Installed ncursesw headers."
+            _info "  Installed ncursesw/ headers."
         else
-            _warn "  ncursesw headers not found in .deb — _curses may not build."
+            _warn "  ncursesw/ headers not found in .deb — _curses may not build."
+        fi
+
+        # 2. Copy flat shim headers if the deb ships them; otherwise generate them.
+        for _hdr in curses.h ncurses.h unctrl.h term.h termcap.h; do
+            local _src="${termux_usr}/include/${_hdr}"
+            local _dst="${CROSS_DEPS_PREFIX}/include/${_hdr}"
+            if [[ -f "$_src" ]]; then
+                cp -a "$_src" "$_dst"
+            elif [[ ! -f "$_dst" ]]; then
+                # Generate a minimal shim that re-exports the widec header.
+                printf '#ifndef _NCURSES_SHIM_%s\n#define _NCURSES_SHIM_%s\n#include <ncursesw/%s>\n#endif\n' \
+                    "${_hdr//./_}" "${_hdr//./_}" "$_hdr" > "$_dst"
+            fi
+        done
+        _info "  Installed flat curses.h shim headers."
+
+        # 3. ncurses/ symlink as an additional fallback include path alias
+        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
+            ln -sf ncursesw "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
         fi
 
         # Copy shared libraries (.so and symlinks)
         local _nc_found=0
-        for f in "${termux_usr}/lib"/libncurses*.so*                  "${termux_usr}/lib"/libpanel*.so*                  "${termux_usr}/lib"/libform*.so*                  "${termux_usr}/lib"/libmenu*.so*; do
+        for f in "${termux_usr}/lib"/libncurses*.so* \
+                 "${termux_usr}/lib"/libpanel*.so*   \
+                 "${termux_usr}/lib"/libform*.so*    \
+                 "${termux_usr}/lib"/libmenu*.so*; do
             if [[ -e "$f" ]]; then
                 cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/"
                 (( _nc_found++ )) || true
@@ -878,11 +908,6 @@ _build_deps() {
             _die "No ncurses .so files found in extracted .deb — check URLs."
         fi
         _info "  Installed ${_nc_found} ncurses library files."
-
-        # Compat symlinks Python setup.py expects
-        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
-            ln -sf ncursesw "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
-        fi
         # libncurses.so symlink without 'w' for configure probes using -lncurses
         local _nc_so
         _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so."* 2>/dev/null | head -1 || true)"
