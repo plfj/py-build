@@ -236,19 +236,10 @@ jobs:
       # Nuke deps-build/ (not deps/ — we want to keep downloaded/extracted libs).
       - name: Clean stale dependency build trees
         run: |
-          rm -rf /tmp/python-build/deps-build /private/tmp/python-build/deps-build
-          # Also remove any ncurses artifacts from a previous partial run so the
-          # extraction + header-shim logic always reruns with a clean slate.
-          rm -f  /tmp/python-build/deps/lib/libncurses*.{a,so}* \
-                 /tmp/python-build/deps/include/curses.h \
-                 /tmp/python-build/deps/include/ncurses.h \
-                 /tmp/python-build/deps/include/ncursesw \
-                 /tmp/python-build/deps/include/ncurses \
-                 /private/tmp/python-build/deps/lib/libncurses*.{a,so}* \
-                 /private/tmp/python-build/deps/include/curses.h \
-                 /private/tmp/python-build/deps/include/ncursesw \
-                 /private/tmp/python-build/deps/include/ncurses \
-                 2>/dev/null || true
+          # Wipe build trees and all cross-dep artifacts so every CI run
+          # starts clean — prevents stale .a stubs or partial extractions
+          # from causing skip-logic to bypass a broken dep build.
+          rm -rf /tmp/python-build /private/tmp/python-build
 
       # ── 9. Build ─────────────────────────────────────────────────────────────
       # The patched source tarball lives under the permanent tag 'frt', not
@@ -257,7 +248,7 @@ jobs:
       # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          RELEASE_TAG:  "frt"
+          RELEASE_TAG:  ${{ needs.prepare-source.outputs.release_tag }}
           OUTPUT_DIR:   ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
@@ -290,7 +281,7 @@ jobs:
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: "frt"
+          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
           files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

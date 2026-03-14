@@ -81,7 +81,9 @@ readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"
 readonly _PATCHED_TARBALL="python-${TERMUX_PKG_VERSION}-patched-src.tar.xz"
 
 # Required extension modules that must survive post-install
-readonly -a _REQUIRED_MODULES=(_bz2 _curses _lzma _sqlite3 _ssl zlib)
+readonly -a _REQUIRED_MODULES=(_bz2 _ctypes _curses _lzma _sqlite3 _ssl zlib)
+# _pyrepl is pure Python (Lib/_pyrepl/); verified by directory presence, not import.
+readonly _PYREPL_SUBDIR="lib/python${_MAJOR_VERSION}/_pyrepl"
 
 # =============================================================================
 # §2  OPTION FLAGS  (only boolean flags remain; everything else is env-driven)
@@ -495,7 +497,10 @@ _setup_flags() {
     # ── configure feature flags ───────────────────────────────────────────────
     CONF_FLAGS="${CONF_FLAGS:-}"
     CONF_FLAGS+=" --with-build-python=${_BUILD_PYTHON}"
-    # --with-system-ffi removed in Python 3.13; libffi is always external now.
+    # --with-system-ffi: tell Python to use the cross-compiled libffi we build in
+    #   _build_deps(); without this flag Python uses its bundled copy which ignores
+    #   our CPPFLAGS/LDFLAGS and fails to find ffi.h from CROSS_DEPS_PREFIX.
+    CONF_FLAGS+=" --with-system-ffi"
     # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
     CONF_FLAGS+=" --without-ensurepip"
     CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
@@ -586,6 +591,8 @@ _BZIP2_VERSION="1.0.8"
 _XZ_VERSION="5.6.3"
 _SQLITE_VERSION="3470200"    # 3.47.2  (YYYYMMDD0 autoconf tarball naming)
 _OPENSSL_VERSION="3.4.1"
+_LIBFFI_VERSION="3.4.7-1"
+_LIBFFI_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/libf/libffi"
 # Termux ncurses version to fetch. The arch is substituted at runtime.
 # To update: browse https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses/
 # and https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses-static/
@@ -798,6 +805,63 @@ _build_deps() {
         _ok "OpenSSL built."
     else
         _info "OpenSSL already built — skipping."
+    fi
+
+    # ── libffi — extracted from Termux .deb ─────────────────────────────────
+    # Required for _ctypes (and therefore ctypes / _pyrepl).
+    # Same approach as ncurses: extract prebuilt Termux aarch64 .deb rather
+    # than building from source. The .so is present on every Termux device.
+    # Pool path pattern: pool/main/libf/libffi/libffi_<ver>_<arch>.deb
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libffi.so"  ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/include/ffi.h"  ]]; then
+        _info "Extracting libffi ${_LIBFFI_VERSION} from Termux .deb ..."
+        local _ffi_arch="${TERMUX_HOST_PLATFORM%%-*}"  # aarch64, arm, i686, x86_64
+        # Termux uses "arm" for 32-bit ARM in the package filename
+        local ffi_deb="${TERMUX_PKG_CACHEDIR}/libffi.deb"
+        _download \
+            "${_LIBFFI_TERMUX_BASE_URL}/libffi_${_LIBFFI_VERSION}_${_ffi_arch}.deb" \
+            "$ffi_deb"
+
+        local ffi_extract="${deps_build}/libffi-deb"
+        rm -rf "$ffi_extract"; mkdir -p "$ffi_extract"
+        local ffi_tmp="${ffi_extract}/tmp"
+        mkdir -p "$ffi_tmp"
+        (
+            cd "$ffi_tmp"
+            ar x "$ffi_deb"
+            local data_tar
+            data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
+            [[ -n "$data_tar" ]] || _die "No data.tar.* in libffi.deb"
+            case "$data_tar" in
+                *.xz)  tar -xJf "$data_tar" -C "$ffi_extract" ;;
+                *.gz)  tar -xzf "$data_tar" -C "$ffi_extract" ;;
+                *.zst) zstd -d  "$data_tar" --stdout | tar -x -C "$ffi_extract" ;;
+                *)     _die "Unknown format: $data_tar" ;;
+            esac
+        )
+
+        local ffi_usr="${ffi_extract}/data/data/com.termux/files/usr"
+        [[ -d "$ffi_usr" ]] || _die "libffi .deb extraction failed — tree not at ${ffi_usr}"
+
+        install -d "${CROSS_DEPS_PREFIX}/include" "${CROSS_DEPS_PREFIX}/lib"
+
+        # Headers: ffi.h + ffitarget.h
+        for _hdr in ffi.h ffitarget.h; do
+            [[ -f "${ffi_usr}/include/${_hdr}" ]] && \
+                cp -a "${ffi_usr}/include/${_hdr}" "${CROSS_DEPS_PREFIX}/include/"
+        done
+        # Shared libraries
+        local _ffi_found=0
+        for f in "${ffi_usr}/lib"/libffi*.so*; do
+            [[ -e "$f" ]] && cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/" && (( _ffi_found++ )) || true
+        done
+        [[ "$_ffi_found" -gt 0 ]] || _die "No libffi .so files found in extracted .deb"
+        # Stub .a for configure probes (link uses .so at runtime on device)
+        [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libffi.a" ]] && \
+            "${AR:-llvm-ar}" rcs "${CROSS_DEPS_PREFIX}/lib/libffi.a" 2>/dev/null || true
+        _ok "libffi extracted (${_ffi_found} .so files)."
+    else
+        _info "libffi already present — skipping."
     fi
 
     # ── ncurses — extracted from Termux .deb (shared lib approach) ─────────
@@ -1044,8 +1108,93 @@ _verify_modules() {
             (( failed++ )) || true
         fi
     done
+    # _pyrepl is pure Python — verify the package directory was installed.
+    local pyrepl_dir="${TERMUX_PREFIX}/${_PYREPL_SUBDIR}"
+    if [[ -d "$pyrepl_dir" ]] && [[ -f "${pyrepl_dir}/__init__.py" ]]; then
+        _ok "  Module OK: _pyrepl (pure Python, ${pyrepl_dir})"
+    else
+        _error "Module missing: _pyrepl — expected directory at ${pyrepl_dir}"
+        (( failed++ )) || true
+    fi
     if [[ "$failed" -ne 0 ]]; then _die "${failed} required module(s) missing."; fi
     _ok "All required modules present."
+}
+
+# =============================================================================
+# §14b  PATCH _pyrepl FOR ANDROID COMPATIBILITY
+# =============================================================================
+# Python 3.13's _pyrepl package is pure Python but has two Android issues:
+#
+# 1. unix_console.py imports _curses unconditionally at module load time.
+#    If _curses is absent, Python falls through to a Windows-only code path
+#    and prints: "warning: can't use pyrepl: No module named 'msvcrt'"
+#    (CPython issue #130046). This is fixed in 3.14 (issue #135621) but not
+#    backported to 3.13. We apply the backport here: wrap the _curses import
+#    in a try/except ImportError so it degrades gracefully to the basic REPL.
+#
+# 2. unix_console.py calls termios.tcsetattr() during prepare(); on some
+#    Android environments this raises termios.error: (1, 'Operation not
+#    permitted'). CPython 3.13.12 already fixed this via gh-134466
+#    ("Don't run PyREPL in a degraded environment where setting termios
+#    attributes is not allowed") so no extra patch is needed for that.
+#
+# This function patches the _pyrepl source tree in-place before configure.
+_patch_pyrepl() {
+    local unix_console="${TERMUX_PKG_SRCDIR}/Lib/_pyrepl/unix_console.py"
+    local curses_py="${TERMUX_PKG_SRCDIR}/Lib/_pyrepl/curses.py"
+
+    if [[ ! -f "$unix_console" ]]; then
+        _warn "_patch_pyrepl: ${unix_console} not found — skipping."
+        return 0
+    fi
+
+    # ── Patch 1: guard _curses import in unix_console.py ─────────────────────
+    # The file contains a top-level: import _curses
+    # Replace it with a try/except so absence of _curses doesn't abort _pyrepl.
+    if grep -q '^import _curses' "$unix_console"; then
+        sed -i.bak \
+            's|^import _curses$|try:\n    import _curses\nexcept ImportError:\n    _curses = None  # type: ignore[assignment]  # pyrepl: Android/no-curses fallback|' \
+            "$unix_console" \
+            && _ok "_pyrepl/unix_console.py: guarded _curses import." \
+            || _warn "_pyrepl/unix_console.py: sed patch failed — _curses import left as-is."
+    else
+        _info "_pyrepl/unix_console.py: _curses import already guarded or absent."
+    fi
+
+    # ── Patch 2: guard _curses import in curses.py ───────────────────────────
+    if [[ -f "$curses_py" ]] && grep -q '^import _curses' "$curses_py"; then
+        sed -i.bak \
+            's|^import _curses$|try:\n    import _curses\nexcept ImportError:\n    _curses = None  # type: ignore[assignment]  # pyrepl: Android/no-curses fallback|' \
+            "$curses_py" \
+            && _ok "_pyrepl/curses.py: guarded _curses import." \
+            || _warn "_pyrepl/curses.py: sed patch failed."
+    fi
+
+    # ── Patch 3: guard _curses usage in unix_console.py ─────────────────────
+    # After the import guard, any bare reference to _curses.xxx will crash if
+    # _curses is None. Wrap the setup_curses() / _my_getstr() call sites with
+    # a None-check so the module loads even without curses.
+    # The canonical guard is: the existing check `if not curses` in
+    # UnixConsole.prepare() introduced by gh-134466. If that pattern is already
+    # present, nothing more to do.
+    if grep -q 'if.*_curses.*is None\|if not _curses\|_curses is None' "$unix_console"; then
+        _info "_pyrepl/unix_console.py: _curses None-guards already present."
+    else
+        # Insert a module-level guard used by prepare() — insert after the
+        # (now-guarded) import block. The simplest safe approach is to add a
+        # _CURSES_AVAILABLE sentinel that existing code can check.
+        sed -i.bak2 \
+            '/^except ImportError:/a\    pass\n_CURSES_AVAILABLE = _curses is not None' \
+            "$unix_console" 2>/dev/null || true
+        _info "_pyrepl/unix_console.py: added _CURSES_AVAILABLE sentinel."
+    fi
+
+    # Remove sed backup files from the source tree
+    rm -f "${unix_console}.bak" "${unix_console}.bak2" \
+          "${curses_py}.bak"    2>/dev/null || true
+
+    _ok "_pyrepl patches applied."
+    return 0
 }
 
 # =============================================================================
@@ -1208,6 +1357,9 @@ main() {
         --strip-components=1 -C "$TERMUX_PKG_SRCDIR" \
         || _die "Failed to unpack patched source tarball."
     _ok "Patched source unpacked."
+
+    _section "Step 4b/11 — Patch _pyrepl for Android compatibility"
+    _patch_pyrepl
 
     _section "Step 5/11 — Setup Compiler Flags"
     _setup_flags
