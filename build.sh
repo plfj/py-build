@@ -1077,32 +1077,39 @@ Description: ${TERMUX_PKG_DESCRIPTION}
 Homepage: ${TERMUX_PKG_HOMEPAGE}
 EOF
 
-    # Stage installed prefix into deb tree
-    local prefix_stripped="${TERMUX_PREFIX#/}"
-    local staging="${debdir}/${prefix_stripped}"
-    mkdir -p "$(dirname "$staging")"
-    cp -a "${TERMUX_PREFIX}" "$staging"
+    # Stage installed prefix into deb tree.
+    # The .deb must always contain files rooted at the canonical Termux path
+    # /data/data/com.termux/files/usr — regardless of where TERMUX_PREFIX
+    # actually lives on the CI host (e.g. /Users/runner/work/.../prefix).
+    local _TERMUX_CANONICAL="data/data/com.termux/files/usr"
+    local staging="${debdir}/${_TERMUX_CANONICAL}"
+    mkdir -p "$staging"
+    cp -a "${TERMUX_PREFIX}/." "$staging/"
 
-    # Generate postinst
+    # Generate postinst.
+    # IMPORTANT: postinst runs on the Android device after dpkg installs the .deb.
+    # All paths must use the canonical Termux prefix (/data/data/com.termux/files/usr),
+    # NOT TERMUX_PREFIX from the build host (which is a CI workspace path).
+    local _p="/${_TERMUX_CANONICAL}"
     local postinst="${ctrl}/postinst"
     {
         printf '#!/usr/bin/env bash\nset -e\n\n'
         printf '_pip_managed_by_pkg() {\n'
-        printf '    case "%s" in\n'                                                         "${TERMUX_PACKAGE_FORMAT}"
-        printf '        debian) [[ -f "%s/var/lib/dpkg/info/python-pip.list" ]] ;;\n'      "${TERMUX_PREFIX}"
-        printf '        pacman) ls "%s/var/lib/pacman/local/python-pip-"* &>/dev/null ;;\n' "${TERMUX_PREFIX}"
+        printf '    case "${TERMUX_PACKAGE_FORMAT:-debian}" in\n'
+        printf '        debian) [[ -f "%s/var/lib/dpkg/info/python-pip.list" ]] ;;\n'      "${_p}"
+        printf '        pacman) ls "%s/var/lib/pacman/local/python-pip-"* &>/dev/null ;;\n' "${_p}"
         printf '        *)      return 1 ;;\n'
         printf '    esac\n}\n\n'
-        printf 'if [[ -f "%s/bin/pip" ]] && ! _pip_managed_by_pkg; then\n'                 "${TERMUX_PREFIX}"
+        printf 'if [[ -f "%s/bin/pip" ]] && ! _pip_managed_by_pkg; then\n'                 "${_p}"
         printf '    echo "Removing unmanaged pip..."\n'
-        printf '    rm -f "%s/bin/pip" "%s/bin/pip3"* "%s/bin/easy_install"*\n'            "${TERMUX_PREFIX}" "${TERMUX_PREFIX}" "${TERMUX_PREFIX}"
-        printf '    rm -rf "%s/lib/python%s/site-packages/pip"*\n'                         "${TERMUX_PREFIX}" "${_MAJOR_VERSION}"
+        printf '    rm -f "%s/bin/pip" "%s/bin/pip3"* "%s/bin/easy_install"*\n'            "${_p}" "${_p}" "${_p}"
+        printf '    rm -rf "%s/lib/python%s/site-packages/pip"*\n'                         "${_p}" "${_MAJOR_VERSION}"
         printf 'fi\n\n'
-        printf 'if [[ ! -f "%s/bin/pip" ]]; then\n'                                        "${TERMUX_PREFIX}"
+        printf 'if [[ ! -f "%s/bin/pip" ]]; then\n'                                        "${_p}"
         printf '    echo "== Note: pip is now a separate package: pkg install python-pip =="\n'
         printf 'fi\n\n'
         printf 'for _old_ver in 3.11 3.12; do\n'
-        printf '    if [[ -d "%s/lib/python${_old_ver}/site-packages" ]]; then\n'          "${TERMUX_PREFIX}"
+        printf '    if [[ -d "%s/lib/python${_old_ver}/site-packages" ]]; then\n'          "${_p}"
         printf '        echo "NOTE: Python updated to %s. Reinstall pip packages."\n'       "${_MAJOR_VERSION}"
         printf '        break\n'
         printf '    fi\n'
