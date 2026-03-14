@@ -257,7 +257,7 @@ jobs:
       # cross-compile context (host cannot exec Android ELF binaries).
       - name: Build Python for Android
         env:
-          RELEASE_TAG:  ${{ needs.prepare-source.outputs.release_tag }}
+          RELEASE_TAG:  "frt"
           OUTPUT_DIR:   ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
@@ -290,7 +290,7 @@ jobs:
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
+          tag_name: "frt"
           files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
