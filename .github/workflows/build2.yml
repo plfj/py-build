@@ -120,7 +120,7 @@ jobs:
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── 2. Host dependencies ─────────────────────────────────────────────────
       # gnu-tar   : build.sh uses 'tar -xJf' and '_create_deb' uses tar; BSD tar
@@ -281,7 +281,7 @@ jobs:
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ needs.prepare-source.outputs.release_tag }}
+          tag_name: "frt"
           files:    dist/python_*.deb
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
