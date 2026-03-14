@@ -1203,9 +1203,15 @@ main() {
     _section "Step 8/11 — Build"
     _info "make -j${TERMUX_PKG_MAKE_PROCESSES} ..."
     cd "$TERMUX_PKG_BUILDDIR"
-    # PYTHON_EXTRA_LDFLAGS: polyfill libs not available at configure time;
-    # inject here so they are present during the actual link step.
+    # Pass CPPFLAGS and LDFLAGS explicitly to make.
+    # Python's Makefile bakes in flags from configure time via PY_CPPFLAGS, but
+    # extension modules compiled during 'make' (like _curses) also need the
+    # cross-dep prefix headers. Passing CPPFLAGS here mirrors what Termux does:
+    # their termux_step_pre_configure sets CPPFLAGS (including sysroot path
+    # and Termux prefix includes) before configure so setup.py sees them all.
+    # PYTHON_EXTRA_LDFLAGS: polyfill libs not available at configure time.
     make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
+        CPPFLAGS="${CPPFLAGS}" \
         LDFLAGS="${LDFLAGS} ${PYTHON_EXTRA_LDFLAGS:-}" \
         || _die "make failed."
     _ok "Build complete."
