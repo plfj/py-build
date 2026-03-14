@@ -500,6 +500,7 @@ _setup_flags() {
     CONF_FLAGS+=" --without-ensurepip"
     CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
 
+
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
         CONF_CACHE+=" ac_cv_func_fexecve=no ac_cv_func_getlogin_r=no"
@@ -938,6 +939,16 @@ _build_deps() {
     export PKG_CONFIG_PATH="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
     export PKG_CONFIG_LIBDIR="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
     export CPPFLAGS LDFLAGS
+
+    # Tell Python configure exactly where our ncurses widec headers/libs are.
+    # Without explicit CURSES_CFLAGS, configure finds the macOS system curses.h
+    # (a BSD stub lacking COLORS, TRUE etc.) and _cursesmodule.c fails to compile.
+    # These are appended to CONF_FLAGS here (not in _setup_flags) because
+    # CROSS_DEPS_PREFIX is not set until _build_deps() runs.
+    CONF_FLAGS+=" CURSES_CFLAGS=-I${CROSS_DEPS_PREFIX}/include/ncursesw"
+    CONF_FLAGS+=" CURSES_LIBS=-lncursesw"
+    CONF_FLAGS+=" PANEL_LIBS=-lpanelw"
+    export CONF_FLAGS
     _ok "All cross-compiled dependencies ready at ${CROSS_DEPS_PREFIX}."
     return 0
 }
