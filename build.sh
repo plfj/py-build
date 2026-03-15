@@ -1235,6 +1235,21 @@ EOF
     mkdir -p "$staging"
     cp -a "${TERMUX_PREFIX}/." "$staging/"
 
+    # ── Sanitise staging tree ─────────────────────────────────────────────
+    # Remove zero-byte (empty) files from bin/: these are placeholder stubs
+    # left by configure or install steps that must not ship in the .deb.
+    local _empty_count=0
+    while IFS= read -r -d '' _f; do
+        _warn "  Removing empty file from bin/: $(basename \"$_f\")"
+        rm -f "$_f"
+        (( _empty_count++ )) || true
+    done < <(find "${staging}/bin" -maxdepth 1 -type f -empty -print0 2>/dev/null)
+    if [[ "$_empty_count" -gt 0 ]]; then
+        _warn "Removed ${_empty_count} empty file(s) from bin/ before packaging."
+    else
+        _info "bin/ is clean — no empty files found."
+    fi
+
     # Generate postinst.
     # IMPORTANT: postinst runs on the Android device after dpkg installs the .deb.
     # All paths must use the canonical Termux prefix (/data/data/com.termux/files/usr),
