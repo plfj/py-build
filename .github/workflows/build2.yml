@@ -5,7 +5,7 @@ on:
   push:
     tags:
       - 'v*'
-    branches: [ master ]
+    branches: [ m-3.14 ]
 
 permissions:
   contents: write
