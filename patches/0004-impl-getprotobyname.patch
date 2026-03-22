@@ -1,6 +1,6 @@
 --- a/Modules/socketmodule.c
 +++ b/Modules/socketmodule.c
-@@ -5373,17 +5373,74 @@
+@@ -6412,17 +6412,74 @@
     This only returns the protocol number, since the other info is
     already known or not useful (like the list of aliases). */
 

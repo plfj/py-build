@@ -1,6 +1,6 @@
 --- a/configure
 +++ b/configure
-@@ -18772,7 +18774,6 @@
+@@ -20644,7 +20644,6 @@
    if test "x$ac_cv_func_link" = xyes
  then :
 

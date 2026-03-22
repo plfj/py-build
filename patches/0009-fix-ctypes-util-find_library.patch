@@ -4,7 +4,7 @@ diff --git a/Lib/ctypes/util.py b/Lib/ctypes/util.py
 index 117bf06cb01..12d7428fe9a 100644
 --- a/Lib/ctypes/util.py
 +++ b/Lib/ctypes/util.py
-@@ -89,15 +89,6 @@ def find_library(name):
+@@ -169,15 +169,6 @@ def find_library(name):
 
      from ctypes._aix import find_library
 

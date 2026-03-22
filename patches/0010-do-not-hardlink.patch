@@ -2,7 +2,7 @@ diff --git a/Makefile.pre.in b/Makefile.pre.in
 index a7dc9709d62..d6b84dc8905 100644
 --- a/Makefile.pre.in
 +++ b/Makefile.pre.in
-@@ -917,7 +917,7 @@ libpython$(LDVERSION).so: $(LIBRARY_OBJS) $(DTRACE_OBJS)
+@@ -1019,7 +1019,7 @@ libpython$(LDVERSION).so: $(LIBRARY_OBJS) $(DTRACE_OBJS)
                 $(BLDSHARED) -o $@ $(LIBRARY_OBJS) $(MODLIBS) $(SHLIBS) $(LIBC) $(LIBM); \
         fi
         if test $(INSTSONAME) != $@; then \
@@ -11,7 +11,7 @@ index a7dc9709d62..d6b84dc8905 100644
         fi
 
  libpython3.so: libpython$(LDVERSION).so
-@@ -2202,7 +2202,7 @@ altbininstall: $(BUILDPYTHON) @FRAMEWORKPYTHONW@
+@@ -2434,7 +2434,7 @@ altbininstall: $(BUILDPYTHON) @FRAMEWORKPYTHONW@
                 if test -f $(DESTDIR)$(BINDIR)/python$(VERSION)$(EXE) -o -h $(DESTDIR)$(BINDIR)/python$(VERSION)$(EXE); \
                 then rm -f $(DESTDIR)$(BINDIR)/python$(VERSION)$(EXE); \
                 fi; \

@@ -1,6 +1,6 @@
 --- a/Lib/http/server.py
 +++ b/Lib/http/server.py
-@@ -1165,10 +1165,6 @@
+@@ -1253,10 +1253,6 @@
                  return
              # Child
              try:

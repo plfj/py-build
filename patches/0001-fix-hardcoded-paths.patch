@@ -10,18 +10,18 @@
  inited = False
 --- a/Lib/posixpath.py
 +++ b/Lib/posixpath.py
-@@ -32,7 +32,7 @@
+@@ -18,7 +18,7 @@
+ curdir = '.'
+ pardir = '..'
  extsep = '.'
- sep = '/'
- pathsep = ':'
 -defpath = '/bin:/usr/bin'
 +defpath = '@TERMUX_PREFIX@/bin'
+ sep = '/'
+ pathsep = ':'
  altsep = None
- devnull = '/dev/null'
-
 --- a/Lib/uuid.py
 +++ b/Lib/uuid.py
-@@ -361,7 +361,6 @@
+@@ -426,7 +426,6 @@
      try:
          path_dirs = os.environ.get('PATH', os.defpath).split(os.pathsep)
 -        path_dirs.extend(['/sbin', '/usr/sbin'])
@@ -30,7 +30,7 @@
              return None
 --- a/Lib/subprocess.py
 +++ b/Lib/subprocess.py
-@@ -1389,9 +1389,7 @@
+@@ -1845,9 +1845,7 @@
                  args = list(args)
 
              if shell:
@@ -43,7 +43,7 @@
                      args[0] = executable
 --- a/Lib/tempfile.py
 +++ b/Lib/tempfile.py
-@@ -124,7 +124,7 @@
+@@ -171,7 +171,7 @@
      if _os.name == 'nt':
          dirlist.extend([ r'c:\temp', r'c:\tmp', r'\temp', r'\tmp' ])
      else:
