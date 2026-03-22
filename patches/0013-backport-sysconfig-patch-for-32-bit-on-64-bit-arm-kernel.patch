@@ -1,15 +1,12 @@
 This is yet to receive any comments/reviews from core Python developers
 at the time of backport, but let's do this cause we need this.
-
 Patch source: https://github.com/python/cpython/pull/145617
 From 1b7a79208bc9d2f80373a2e0b9d018b4bc3fae66 Mon Sep 17 00:00:00 2001
 From: Robert Kirkman <rkirkman@termux.dev>
 Date: Fri, 6 Mar 2026 20:32:05 -0600
 Subject: [PATCH 1/2] gh-145616: Detect Android sysconfig ABI correctly on
  32-bit ARM Android on 64-bit ARM kernel
-
 - When Python is running on 32-bit ARM Android on a 64-bit ARM kernel, `os.uname().machine` is `armv8l`. Such devices run the same userspace code as `armv7l` devices, so apply the same `armeabi_v7a` Android ABI to them, which works.
-
 - Issue: https://github.com/python/cpython/issues/145616
 ---
  Lib/sysconfig/__init__.py | 4 ++++
@@ -44,7 +41,6 @@ Subject: [PATCH 2/2] =?UTF-8?q?=F0=9F=93=9C=F0=9F=A4=96=20Added=20by=20blu?=
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
-
 ---
  .../next/Library/2026-03-07-02-44-52.gh-issue-145616.x8Mf23.rst  | 1 +
  1 file changed, 1 insertion(+)

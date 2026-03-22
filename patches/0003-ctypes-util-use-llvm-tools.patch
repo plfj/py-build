@@ -11,7 +11,7 @@
                  return None
 @@ -209,7 +209,7 @@
              expr = os.fsencode(expr)
- 
+
              try:
 -                proc = subprocess.Popen(('/sbin/ldconfig', '-r'),
 +                proc = subprocess.Popen(('@TERMUX_PREFIX@/bin/ldconfig', '-r'),

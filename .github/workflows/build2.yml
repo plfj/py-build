@@ -25,13 +25,12 @@ jobs:
     name: Prepare patched source
     runs-on: ubuntu-24.04
     container:
-      # Official CPython autoconf image — contains the exact autoconf/automake/
-      # aclocal/libtool versions used by CPython release engineers.
-      # Python 3.14 requires autoconf >= 2.71; this image satisfies that.
+      # Official CPython autoconf image — contains autoconf >= 2.71 as required
+      # by Python 3.14's configure.ac.
       image: ghcr.io/python/autoconf:2024.10.16.11360930377
 
     outputs:
-      release_tag: "frt14"
+      release_tag: ${{ steps.release_tag.outputs.tag }}
       source_url:  ${{ steps.release.outputs.assets && fromJSON(steps.release.outputs.assets)[0].browser_download_url || '' }}
 
     steps:
@@ -46,8 +45,6 @@ jobs:
             xz-utils file ca-certificates
 
       - name: Verify autoconf version
-        # Python 3.14 requires autoconf >= 2.71.
-        # The CPython autoconf container satisfies this; fail fast if it doesn't.
         run: |
           autoconf --version | head -1
           autoreconf --version | head -1
@@ -59,7 +56,6 @@ jobs:
             exit 1
           fi
           echo "autoconf ${_ver} OK"
-          which autoconf && which autoreconf
 
       - name: Prepare and pack patched source
         run: |
@@ -83,10 +79,6 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Release tag: ${TAG}"
 
-      # softprops/action-gh-release@v2 — creates the release AND uploads assets
-      # in one step. The tarball is uploaded under the permanent tag 'frt' so
-      # the build job can always find it at a stable URL regardless of the
-      # per-run release tag.
       - name: Create release and upload patched source tarball
         id: release
         uses: softprops/action-gh-release@v2
@@ -97,13 +89,6 @@ jobs:
           body: |
             Termux Python ${{ env.PYTHON_VERSION }} revision ${{ env.PYTHON_REVISION }}
             for Android (API ${{ env.ANDROID_API_LEVEL }}, ${{ env.TERMUX_ARCH }}).
-
-            **What's new in 3.14:**
-            - PEP 703 free-threaded build support (opt-in, disabled by default)
-            - `distutils` fully removed — use `setuptools`
-            - New interpreter isolation modules: `_interpchannels`, `_interpqueues`
-            - Official Android cross-compilation support via `--with-android-api-level`
-            - `shm_open`/`shm_unlink` emulation for `multiprocessing.shared_memory`
 
             **Assets:**
             - `python-*-patched-src.tar.xz` — Patched + autoreconf'd CPython 3.14.3 source
@@ -123,34 +108,20 @@ jobs:
     needs: prepare-source
 
     env:
-      # ── Android SDK / NDK ────────────────────────────────────────────────────
       ANDROID_HOME:         ${{ github.workspace }}/android-sdk
-      ANDROID_NDK_VERSION:  "27.3.13750724"   # LTS release — ships darwin-x86_64 toolchain
+      ANDROID_NDK_VERSION:  "27.3.13750724"
       ANDROID_SDK_VERSION:  "35"
       ANDROID_BUILD_TOOLS:  "35.0.0"
-      # ── Termux target ────────────────────────────────────────────────────────
       TERMUX_PKG_API_LEVEL: "35"
-      TERMUX_ARCH:          "aarch64"          # canonical form expected by build-pkg.sh
-      # ── Python package version (must match build-pkg.sh TERMUX_PKG_VERSION) ──
+      TERMUX_ARCH:          "aarch64"
       PYTHON_VERSION:       "3.14.3"
       PYTHON_REVISION:      "0"
-      # ── Install prefix — picked up by build-pkg.sh via $PREFIX fallback ──────
       PREFIX:               ${{ github.workspace }}/prefix
 
     steps:
-      # ── 1. Checkout ──────────────────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v6
 
-      # ── 2. Host dependencies ─────────────────────────────────────────────────
-      # gnu-tar   : build-pkg.sh uses 'tar -xJf' and '_create_deb' uses tar;
-      #             BSD tar supports -J only with a separate xz binary — simpler
-      #             to have gtar available for the unpack step.
-      # xz        : used directly in _create_deb when dpkg-deb is absent.
-      # binutils  : provides GNU 'gar' (ar) for assembling the .deb ar archive.
-      # nproc     : part of coreutils — used by _detect_cpu_count in build-pkg.sh.
-      # python3   : required by Python 3.14 configure's freeze/bootstrap step
-      #             (--with-build-python). Must be >= 3.11.
       - name: Install host dependencies
         run: |
           set -euo pipefail
@@ -159,8 +130,6 @@ jobs:
             coreutils gawk xz zstd gnu-tar binutils \
             openssl sqlite readline zlib libffi \
             python3
-          # Prepend GNU tool paths so nproc, gtar, gar etc. shadow BSD equivalents.
-          # Also prepend python3 so configure finds it as 'python3'.
           {
             echo "/opt/homebrew/opt/coreutils/libexec/gnubin"
             echo "/opt/homebrew/opt/gnu-tar/libexec/gnubin"
@@ -174,9 +143,6 @@ jobs:
             echo "CPPFLAGS_HOST=-I/opt/homebrew/opt/openssl/include -I/opt/homebrew/opt/readline/include -I/opt/homebrew/opt/zlib/include"
           } >> "$GITHUB_ENV"
 
-      # ── 3. Verify host Python version ────────────────────────────────────────
-      # Python 3.14's configure --with-build-python requires >= 3.11 on the host.
-      # Log the resolved python3 so failures are easy to diagnose.
       - name: Verify host Python
         run: |
           which python3
@@ -184,11 +150,9 @@ jobs:
           python3 -c "import sys; assert sys.version_info >= (3,11), f'Host Python {sys.version} < 3.11'"
           echo "Host Python OK"
 
-      # ── 4. Android SDK ───────────────────────────────────────────────────────
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      # ── 5. NDK ───────────────────────────────────────────────────────────────
       - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
         run: |
           set -euxo pipefail
@@ -200,14 +164,6 @@ jobs:
             "ndk;${ANDROID_NDK_VERSION}"
           ls -1 "$ANDROID_HOME/ndk/"
 
-      # ── 6. Cross-compile environment ─────────────────────────────────────────
-      # NDK 27 ships ONLY darwin-x86_64; it runs via Rosetta 2 on Apple Silicon.
-      # ANDROID_API_LEVEL is exported here so the clang target triple matches
-      # TERMUX_PKG_API_LEVEL (they must be identical).
-      #
-      # Python 3.14 note: the new --with-android-api-level configure flag
-      # (patch 0012) expects the same value as the clang -target triple API
-      # suffix.  Both are driven by TERMUX_PKG_API_LEVEL=35 set above.
       - name: Configure NDK cross-compilation environment
         run: |
           set -euo pipefail
@@ -220,23 +176,13 @@ jobs:
           else echo "No NDK toolchain found under $PREBUILT"; exit 1; fi
 
           SYSROOT="$TOOLCHAIN/sysroot"
-
-          # Target triple — API level must match TERMUX_PKG_API_LEVEL.
           ANDROID_API_LEVEL="${TERMUX_PKG_API_LEVEL}"
           TARGET="aarch64-linux-android${ANDROID_API_LEVEL}"
           CC_BIN="$TOOLCHAIN/bin/${TARGET}-clang"
           CXX_BIN="$TOOLCHAIN/bin/${TARGET}-clang++"
 
-          [ -x "$CC_BIN"  ] || {
-            echo "CC not found: $CC_BIN"
-            ls "$TOOLCHAIN/bin/" | grep clang || true
-            exit 1
-          }
-          [ -x "$CXX_BIN" ] || {
-            echo "CXX not found: $CXX_BIN"
-            ls "$TOOLCHAIN/bin/" | grep clang || true
-            exit 1
-          }
+          [ -x "$CC_BIN"  ] || { echo "CC not found: $CC_BIN";  ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          [ -x "$CXX_BIN" ] || { echo "CXX not found: $CXX_BIN"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
           echo "$TOOLCHAIN/bin" >> "$GITHUB_PATH"
 
@@ -261,7 +207,6 @@ jobs:
             echo "TERMUX_PREFIX=${{ github.workspace }}/prefix"
           } >> "$GITHUB_ENV"
 
-      # ── 7. Smoke-test the cross-compiler ─────────────────────────────────────
       - name: Verify cross-compiler
         run: |
           set -euo pipefail
@@ -271,46 +216,28 @@ jobs:
             && echo "Cross-compile smoke test passed" \
             || { echo "Cross-compile smoke test FAILED"; exit 1; }
 
-      # ── 8. Prefix directory ───────────────────────────────────────────────────
       - name: Prepare output prefix
         run: mkdir -p "${{ github.workspace }}/prefix"
 
-      # ── 9. Clean stale build trees ────────────────────────────────────────────
-      # Wipe all cross-dep build artifacts so every CI run starts from a clean
-      # state. Prevents stale .a stubs or partial extractions from being reused
-      # when the skip-logic in _build_deps() fires incorrectly.
       - name: Clean stale dependency build trees
         run: rm -rf /tmp/python-build /private/tmp/python-build
 
-      # ── 10. Build ────────────────────────────────────────────────────────────
-      # The patched source tarball lives under the permanent tag 'frt'.
-      # build-pkg.sh auto-skips module verification because it detects a
-      # cross-compile context (host macOS cannot exec Android ELF binaries).
-      #
-      # Python 3.14 specific: _build_deps() will build sqlite3 3.49.1
-      # (bumped from 3.47.2 in the 3.13 workflow) and will extract ncurses +
-      # libffi from the Termux .deb packages as before.
       - name: Build Python 3.14.3 for Android
         env:
           RELEASE_TAG: "frt14"
           OUTPUT_DIR:  ${{ github.workspace }}/dist
         run: |
           set -euxo pipefail
-
           if [[ -z "${RELEASE_TAG:-}" ]]; then
             echo "ERROR: RELEASE_TAG is empty — prepare-source did not expose release_tag."
             exit 1
           fi
-
-          # Patched source is always at the stable 'frt' tag, not the per-run tag.
           export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/frt/python-${PYTHON_VERSION}-patched-src.tar.xz"
           echo "PATCHED_SOURCE_URL=${PATCHED_SOURCE_URL}"
-
           mkdir -p dist
           chmod +x build-pkg.sh
           ./build-pkg.sh
 
-      # ── 11. Show artifacts ────────────────────────────────────────────────────
       - name: Show build output
         if: always()
         run: |
@@ -321,7 +248,6 @@ jobs:
           echo "=== dist/ ==="
           ls -lh dist/ 2>/dev/null || echo "(empty)"
 
-      # ── 12. Upload .deb to release ────────────────────────────────────────────
       - name: Upload .deb to release
         uses: softprops/action-gh-release@v2
         with:

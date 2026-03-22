@@ -1,9 +1,34 @@
+From: Termux Maintainers <maintainers@termux.dev>
+Subject: [PATCH 0005] Implement multiprocessing shared memory for Android
+
+Three changes are bundled here:
+
+1. configure.ac — remove the blanket block of sem_open / sem_unlink.
+   Python 3.14 already unblocks these (they were blocked due to a SELinux
+   policy on Android 13 that has since been relaxed).  Keeping them
+   blocked prevents multiprocessing.shared_memory from working at all.
+
+2. Lib/multiprocessing/heap.py — Android has no /dev/shm; suppress the
+   /dev/shm candidate on Android so the heap falls back to a writable
+   temp directory instead of failing at import time.
+
+3. Modules/_multiprocessing/posixshmem.c — provide a complete Android
+   shm_open / shm_unlink emulation backed by files under
+   $TERMUX_PREFIX/tmp (falling back to $TMPDIR, then /data/local/tmp).
+   The implementation is thread-safe (pthread_once), sets FD_CLOEXEC,
+   and enforces POSIX flat-namespace semantics.
+---
+ configure.ac                           |   4 -
+ Lib/multiprocessing/heap.py            |   4 +-
+ Modules/_multiprocessing/posixshmem.c  | 120 +++++++++++++++++++++++++++++++++
+ 3 files changed, 123 insertions(+), 5 deletions(-)
+
 --- a/configure.ac
 +++ b/configure.ac
 @@ -5197,10 +5197,6 @@ if test "$ac_sys_system" = "Linux-android"; then
    blocked_funcs="chroot initgroups setegid seteuid setgid sethostname
      setregid setresgid setresuid setreuid setuid"
- 
+
 -  # These functions are unimplemented and always return an error
 -  # (https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/android13-release/public/domain.te#1044)
 -  blocked_funcs="$blocked_funcs sem_open sem_unlink"
@@ -15,7 +40,7 @@
 +++ b/Lib/multiprocessing/heap.py
 @@ -70,7 +70,9 @@
          """
- 
+
          if sys.platform == 'linux':
 -            _dir_candidates = ['/dev/shm']
 +            import platform
@@ -23,13 +48,13 @@
 +            _dir_candidates = [] if platform.system() == 'Linux' and 'android' in platform.release().lower() else ['/dev/shm']
          else:
              _dir_candidates = []
- 
+
 --- a/Modules/_multiprocessing/posixshmem.c
 +++ b/Modules/_multiprocessing/posixshmem.c
 @@ -11,6 +11,126 @@
  #include <sys/mman.h>
  #endif
- 
+
 +#ifdef __ANDROID__
 +#include <fcntl.h>
 +#include <stdlib.h>

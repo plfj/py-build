@@ -3,7 +3,7 @@
 @@ -5373,17 +5373,74 @@
     This only returns the protocol number, since the other info is
     already known or not useful (like the list of aliases). */
- 
+
 +#ifdef __ANDROID__
 +struct protocol_name_and_number {
 +    char* name;
