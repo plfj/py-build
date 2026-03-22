@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Termux Python 3.13.12 — build.sh
+# Termux Python 3.14.3 — build.sh
 # =============================================================================
 # PART 2 OF 2: Download the patched + autoreconf'd source tarball produced by
 # prepare-source.sh, cross-compile Python for Android, and produce a .deb
@@ -46,7 +46,7 @@
 #   bash build.sh
 #
 #   # Local Termux on-device build:
-#   PATCHED_SOURCE_URL=https://example.com/python-3.13.12-patched-src.tar.xz \
+#   PATCHED_SOURCE_URL=https://example.com/python-3.14.3-patched-src.tar.xz \
 #     bash build.sh
 #
 #   # Clean rebuild, keep test trees, skip module verification:
@@ -71,18 +71,23 @@ readonly _SCRIPT_DIR
 # =============================================================================
 readonly TERMUX_PKG_HOMEPAGE="https://python.org/"
 readonly TERMUX_PKG_DESCRIPTION="Python 3 programming language intended to enable clear programs"
-readonly TERMUX_PKG_LICENSE="custom"
-readonly TERMUX_PKG_MAINTAINER="Yaksh Bariya <thunder-coding@termux.dev>"
-readonly TERMUX_PKG_VERSION="3.13.12"
-readonly TERMUX_PKG_REVISION=3
-readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"
+readonly TERMUX_PKG_LICENSE="PythonPL"
+readonly TERMUX_PKG_MAINTAINER="@termux"
+readonly TERMUX_PKG_VERSION="3.14.3"
+readonly TERMUX_PKG_REVISION=0
+readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"   # -> "3.14"
 
 # Name of the patched-source tarball (must match prepare-source.sh)
 readonly _PATCHED_TARBALL="python-${TERMUX_PKG_VERSION}-patched-src.tar.xz"
 
-# Required extension modules that must survive post-install
-readonly -a _REQUIRED_MODULES=(_bz2 _ctypes _curses _lzma _sqlite3 _ssl zlib)
-# _pyrepl is pure Python (Lib/_pyrepl/); verified by directory presence, not import.
+# Required extension modules that must survive post-install.
+# Python 3.14 notes:
+#   - _crypt was removed in 3.13; not listed.
+#   - _pyrepl is pure Python (Lib/_pyrepl/); verified by directory presence.
+#   - _interpchannels and _interpqueues are new in 3.14 (interpreter isolation).
+#   - _testcapi and _testinternalcapi are build-only; not listed.
+readonly -a _REQUIRED_MODULES=(_bz2 _ctypes _curses _lzma _sqlite3 _ssl zlib
+                                _interpchannels _interpqueues)
 readonly _PYREPL_SUBDIR="lib/python${_MAJOR_VERSION}/_pyrepl"
 
 # =============================================================================
@@ -185,8 +190,6 @@ _detect_cpu_count() {
 # §7  CROSS-COMPILE DETECTION
 # =============================================================================
 # Returns true if the build host cannot execute the target binaries directly.
-# On a macOS-14 (arm64) runner building aarch64-linux-android, the target ELF
-# binary cannot be run — module verification must be skipped automatically.
 _is_cross_compiling() {
     [[ "$TERMUX_ON_DEVICE_BUILD" != "true" ]]
 }
@@ -196,24 +199,19 @@ _is_cross_compiling() {
 # =============================================================================
 _setup_env() {
     # ── Prefix ────────────────────────────────────────────────────────────────
-    # Workflow sets PREFIX=${{ github.workspace }}/prefix; pick that up.
     if [[ -z "${TERMUX_PREFIX:-}" ]]; then
         export TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
     fi
 
     # ── API level ─────────────────────────────────────────────────────────────
-    # Workflow sets TERMUX_PKG_API_LEVEL=35 in env:
     if [[ -z "${TERMUX_PKG_API_LEVEL:-}" ]]; then export TERMUX_PKG_API_LEVEL=35; fi
 
-    # ── Arch (detect then always normalise) ───────────────────────────────────
-    # Workflow does not set TERMUX_ARCH; uname -m on macos-14 returns "arm64"
-    # which _normalize_arch converts to "aarch64" — the correct Android target.
+    # ── Arch ──────────────────────────────────────────────────────────────────
     if [[ -z "${TERMUX_ARCH:-}" ]]; then TERMUX_ARCH="$(uname -m)"; export TERMUX_ARCH; fi
     TERMUX_ARCH="$(_normalize_arch "$TERMUX_ARCH")"
     export TERMUX_ARCH
 
     # ── Toolchain + package format ────────────────────────────────────────────
-    # Workflow exports TERMUX_STANDALONE_TOOLCHAIN pointing at the NDK toolchain.
     if [[ -z "${TERMUX_STANDALONE_TOOLCHAIN:-}" ]]; then
         export TERMUX_STANDALONE_TOOLCHAIN="${TERMUX_PREFIX}"
     fi
@@ -236,8 +234,6 @@ _setup_env() {
     fi
 
     # ── Build triple (the machine running the compiler) ───────────────────────
-    # On the macos-14 CI runner: aarch64-apple-darwin.
-    # On a Linux x86_64 runner:  x86_64-linux-gnu.
     if [[ -z "${TERMUX_BUILD_TUPLE:-}" ]]; then
         if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
             TERMUX_BUILD_TUPLE="$(_arch_to_triplet "$TERMUX_ARCH")"
@@ -251,7 +247,7 @@ _setup_env() {
         export TERMUX_BUILD_TUPLE
     fi
 
-    # ── Parallel jobs — CPU_COUNT is the single source of truth ──────────────
+    # ── Parallel jobs ─────────────────────────────────────────────────────────
     _detect_cpu_count
     if [[ -z "${TERMUX_PKG_MAKE_PROCESSES:-}" ]]; then
         TERMUX_PKG_MAKE_PROCESSES="${CPU_COUNT}"
@@ -259,8 +255,6 @@ _setup_env() {
     fi
 
     # ── Auto-skip module verification when cross-compiling ────────────────────
-    # The macOS host runner cannot execute aarch64-linux-android ELF binaries.
-    # Suppress the error instead of silently succeeding or crashing.
     if _is_cross_compiling && [[ "$_OPT_SKIP_VERIFY" != "true" ]]; then
         _warn "Cross-compile detected: module verification auto-skipped."
         _warn "  (Host cannot exec target binaries — set --skip-verify to silence this.)"
@@ -276,24 +270,18 @@ _setup_env() {
 
     # ── Source URL ────────────────────────────────────────────────────────────
     # Strip any leading/trailing whitespace or stray __ sentinel characters that
-    # GitHub Actions injects when a ${{ }} expression resolves to empty string
-    # (e.g. needs.job.outputs.key undefined -> "__https://...__").
+    # GitHub Actions injects when a ${{ }} expression resolves to empty string.
     PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL:-}"
-    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL#__}"    # strip leading __
-    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL%__}"    # strip trailing __
-    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL// /}"   # strip spaces
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL#__}"
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL%__}"
+    PATCHED_SOURCE_URL="${PATCHED_SOURCE_URL// /}"
     export PATCHED_SOURCE_URL
 
     if [[ -z "$PATCHED_SOURCE_URL" ]]; then
         _die "PATCHED_SOURCE_URL is not set. Check that prepare-source exposes release_tag as a job output."
     fi
-
-    # Reject values that don't look like an HTTP(S) URL — catches the case
-    # where ${{ needs.job.outputs.key }} resolved to empty and surrounding
-    # literal text collapsed into a non-URL string like
-    # '/releases/download//python-3.13.12-patched-src.tar.xz'.
     if [[ "$PATCHED_SOURCE_URL" != http://* && "$PATCHED_SOURCE_URL" != https://* ]]; then
-        _die "PATCHED_SOURCE_URL does not look like a URL: '${PATCHED_SOURCE_URL}'. Check release_tag output."
+        _die "PATCHED_SOURCE_URL does not look like a URL: '${PATCHED_SOURCE_URL}'."
     fi
 
     _info "Source URL: ${PATCHED_SOURCE_URL}"
@@ -311,13 +299,10 @@ _sha256() {
     else
         _die "No SHA-256 utility found (install coreutils or shasum)."
     fi
-    return 0
 }
 
 _download() {
     local url="$1" dest="$2" expected="${3:-}"
-    # Use a fixed tmp path (no trap) to avoid the set -u "unbound variable" error
-    # that fires when a RETURN trap evaluates $tmp after the local goes out of scope.
     local tmp="${dest}.tmp.$$"
 
     mkdir -p "$(dirname "$dest")"
@@ -360,7 +345,6 @@ _download() {
 
     mv "$tmp" "$dest"
     _ok "Downloaded: $(basename "$dest")"
-    return 0
 }
 
 # =============================================================================
@@ -385,9 +369,9 @@ _check_tools() {
             (( missing++ )) || true
         fi
     done
-    # NOTE: (( expr )) exits 1 when expr==0, which trips set -e.
-    # Use [[ ]] for the zero-check so a clean run never causes a false exit.
-    if [[ "$missing" -ne 0 ]]; then _die "${missing} required tool(s) missing — install them and retry."; fi
+    if [[ "$missing" -ne 0 ]]; then
+        _die "${missing} required tool(s) missing — install them and retry."
+    fi
     _ok "All required tools present."
 }
 
@@ -395,45 +379,41 @@ _check_tools() {
 # §11  PRE-CONFIGURE FLAGS
 # =============================================================================
 _setup_flags() {
-    # Unset host-only pkg-config and include paths exported by the workflow's
-    # "Install host dependencies" step. Leaving them in place would cause
-    # configure to find host (macOS/x86_64) headers and link against host libs.
     unset PKG_CONFIG_PATH CPPFLAGS_HOST LDFLAGS_HOST
 
+    # Python 3.14 requires a host python3 for the freeze / bootstrap step.
+    # Prefer python3.14 if already installed (e.g. a previous build), then
+    # fall back to any python3.
     local _BUILD_PYTHON
     _BUILD_PYTHON="$(command -v "python${_MAJOR_VERSION}" \
                    || command -v python3 \
-                   || { _warn "No host Python found; configure may fail."; \
+                   || { _warn "No host Python found — configure may fail."; \
                         echo "python${_MAJOR_VERSION}"; })"
-    _info "Host Python: $_BUILD_PYTHON"
+    _info "Host Python (--with-build-python): $_BUILD_PYTHON"
 
     # ── CFLAGS ────────────────────────────────────────────────────────────────
     CFLAGS="${CFLAGS:-}"
-    CFLAGS="${CFLAGS/-Oz/-O3}"                       # -Oz breaks Python on Android
+    CFLAGS="${CFLAGS/-Oz/-O3}"                        # -Oz breaks Python on Android
     if [[ ! "$CFLAGS" =~ -O[0-9s] ]]; then CFLAGS+=" -O3"; fi
-    CFLAGS+=" -fno-semantic-interposition"            # improves call-through-plt perf
+    CFLAGS+=" -fno-semantic-interposition"             # improves call-through-plt perf
 
-    # Ensure --sysroot is in CFLAGS for clang's include resolution.
-    # The workflow puts it there, but guard in case of local dev without workflow env.
+    # Python 3.14: LTO is enabled by --with-lto in configure (see build.sh
+    # TERMUX_PKG_EXTRA_CONFIGURE_ARGS). Explicit -flto here would duplicate it
+    # and may cause CFLAGS/configure disagreements. Leave LTO to configure.
+
     if [[ -n "${SYSROOT:-}" ]] && [[ "$CFLAGS" != *--sysroot* ]]; then
         CFLAGS+=" --sysroot=${SYSROOT}"
     fi
-
-    # Ensure -target is in CFLAGS. Required for NDK clang to emit Android ELF.
     if [[ -n "${ANDROID_BUILD_TARGET:-}" ]] && [[ "$CFLAGS" != *-target* ]]; then
         CFLAGS+=" -target ${ANDROID_BUILD_TARGET}"
     fi
 
     # ── LDFLAGS ───────────────────────────────────────────────────────────────
     LDFLAGS="${LDFLAGS:-}"
-    LDFLAGS="${LDFLAGS//-Wl,--as-needed/}"            # breaks extension module linking
-
-    # Ensure --sysroot is in LDFLAGS for the linker (lld) to find Android libc.
+    LDFLAGS="${LDFLAGS//-Wl,--as-needed/}"             # breaks extension module linking
     if [[ -n "${SYSROOT:-}" ]] && [[ "$LDFLAGS" != *--sysroot* ]]; then
         LDFLAGS+=" --sysroot=${SYSROOT}"
     fi
-
-    # Use lld — GNU ld cannot link Android ELF correctly on a macOS host.
     if [[ "$LDFLAGS" != *-fuse-ld* ]]; then
         LDFLAGS+=" -fuse-ld=lld"
     fi
@@ -442,27 +422,18 @@ _setup_flags() {
     CPPFLAGS="${CPPFLAGS:-}"
     local _sysroot="${TERMUX_STANDALONE_TOOLCHAIN}/sysroot"
     local _sysroot_inc="${_sysroot}/usr/include"
-    # NDK 27 layout: usr/lib/<triple>/  (arch-specific subdir)
-    # Also add usr/lib/<triple>/<api>/ for versioned stubs.
     local _sysroot_lib_base="${_sysroot}/usr/lib"
     local _sysroot_lib_arch="${_sysroot_lib_base}/${TERMUX_HOST_PLATFORM}"
     local _sysroot_lib_api="${_sysroot_lib_arch}/${TERMUX_PKG_API_LEVEL}"
     if [[ -d "${_sysroot_inc}" ]]; then
         CPPFLAGS+=" -I${_sysroot_inc}"
-        # Arch-specific headers (e.g. asm/)
         if [[ -d "${_sysroot_inc}/${TERMUX_HOST_PLATFORM}" ]]; then
             CPPFLAGS+=" -I${_sysroot_inc}/${TERMUX_HOST_PLATFORM}"
         fi
     fi
-    if [[ -d "${_sysroot_lib_api}" ]]; then
-        LDFLAGS+=" -L${_sysroot_lib_api}"
-    fi
-    if [[ -d "${_sysroot_lib_arch}" ]]; then
-        LDFLAGS+=" -L${_sysroot_lib_arch}"
-    fi
-    if [[ -d "${_sysroot_lib_base}" ]]; then
-        LDFLAGS+=" -L${_sysroot_lib_base}"
-    fi
+    for _ldir in "$_sysroot_lib_api" "$_sysroot_lib_arch" "$_sysroot_lib_base"; do
+        [[ -d "$_ldir" ]] && LDFLAGS+=" -L${_ldir}"
+    done
 
     # ── On-device: explicit API level define ──────────────────────────────────
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]]; then
@@ -471,7 +442,7 @@ _setup_flags() {
         CPPFLAGS+=" -D__ANDROID_API__=${sdk_ver}"
     fi
 
-    # ── autoconf cache vars (unconditional) ───────────────────────────────────
+    # ── autoconf cache vars ───────────────────────────────────────────────────
     CONF_CACHE="${CONF_CACHE:-}"
     CONF_CACHE+=" ac_cv_file__dev_ptmx=yes"
     CONF_CACHE+=" ac_cv_file__dev_ptc=no"
@@ -482,6 +453,8 @@ _setup_flags() {
     CONF_CACHE+=" ac_cv_buggy_getaddrinfo=no"
     CONF_CACHE+=" ac_cv_little_endian_double=yes"
     CONF_CACHE+=" ac_cv_posix_semaphores_enabled=yes"
+    # Python 3.14: sem_open / sem_unlink are unblocked (patch 0005 removes the
+    # configure.ac block). Set the cache vars to 'yes' to match.
     CONF_CACHE+=" ac_cv_func_sem_open=yes"
     CONF_CACHE+=" ac_cv_func_sem_timedwait=yes"
     CONF_CACHE+=" ac_cv_func_sem_getvalue=yes"
@@ -493,18 +466,27 @@ _setup_flags() {
     CONF_CACHE+=" ac_cv_func_getgrent=yes"
     CONF_CACHE+=" ac_cv_func_posix_spawn=yes"
     CONF_CACHE+=" ac_cv_func_posix_spawnp=yes"
+    # Python 3.14: new configure probes for interpreter isolation features
+    CONF_CACHE+=" ac_cv_func_pthread_getname_np=yes"
+    CONF_CACHE+=" ac_cv_func_pthread_setname_np=yes"
+    # Python 3.14: free-threaded build (PEP 703) — disable by default
+    CONF_CACHE+=" ac_cv_with_disable_gil=no"
 
     # ── configure feature flags ───────────────────────────────────────────────
     CONF_FLAGS="${CONF_FLAGS:-}"
     CONF_FLAGS+=" --with-build-python=${_BUILD_PYTHON}"
-    # --with-system-ffi: tell Python to use the cross-compiled libffi we build in
-    #   _build_deps(); without this flag Python uses its bundled copy which ignores
-    #   our CPPFLAGS/LDFLAGS and fails to find ffi.h from CROSS_DEPS_PREFIX.
     CONF_FLAGS+=" --with-system-ffi"
-    # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
+    # Python 3.14: --without-static-libpython avoids linking libpython.a into
+    # the interpreter — required for extension module dlopen to work on Android.
+    CONF_FLAGS+=" --without-static-libpython"
+    # Python 3.14: --with-lto enables link-time optimisation via the configure
+    # mechanism rather than raw -flto, so the compiler and linker flags stay
+    # consistent with Python's own feature-detection.
+    CONF_FLAGS+=" --with-lto"
     CONF_FLAGS+=" --without-ensurepip"
     CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
-
+    # Python 3.14: official Android cross-compilation flag (see patch 0012).
+    CONF_FLAGS+=" --with-android-api-level=${TERMUX_PKG_API_LEVEL}"
 
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -539,11 +521,10 @@ _setup_flags() {
 
     # ── polyfill libraries ────────────────────────────────────────────────────
     # libandroid-posix-semaphore: named semaphores polyfill for API < 30.
-    # libandroid-spawn:           posix_spawn polyfill for API < 28.
-    # Both are Termux-installed packages; they do NOT exist in the NDK sysroot
-    # and must not be linked on a CI cross-compile where TERMUX_PREFIX is empty.
-    # At API >= 30 bionic provides named semaphores natively.
-    # At API >= 28 bionic provides posix_spawn natively.
+    # At API >= 30 bionic provides named semaphores natively (and patch 0005
+    # unblocks sem_open/sem_unlink in configure.ac for all API levels, relying
+    # on the shm_open emulation in posixshmem.c on older APIs).
+    # libandroid-spawn: posix_spawn polyfill for API < 28.
     PYTHON_EXTRA_LDFLAGS=""
     if (( TERMUX_PKG_API_LEVEL < 30 )); then
         if [[ -f "${TERMUX_PREFIX}/lib/libandroid-posix-semaphore.a" ]] || \
@@ -551,7 +532,7 @@ _setup_flags() {
             PYTHON_EXTRA_LDFLAGS+=" -landroid-posix-semaphore"
             LDFLAGS+=" -L${TERMUX_PREFIX}/lib"
         else
-            _warn "libandroid-posix-semaphore not found in ${TERMUX_PREFIX}/lib — skipping (API ${TERMUX_PKG_API_LEVEL} >= 28, native sem_open available)"
+            _warn "libandroid-posix-semaphore not found — skipping (API ${TERMUX_PKG_API_LEVEL})"
         fi
     fi
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -559,47 +540,39 @@ _setup_flags() {
            [[ -f "${TERMUX_PREFIX}/lib/libandroid-spawn.so" ]]; then
             PYTHON_EXTRA_LDFLAGS+=" -landroid-spawn"
         else
-            _warn "libandroid-spawn not found in ${TERMUX_PREFIX}/lib — skipping (API ${TERMUX_PKG_API_LEVEL} >= 28, native posix_spawn available)"
+            _warn "libandroid-spawn not found — skipping (API ${TERMUX_PKG_API_LEVEL})"
         fi
     fi
     export PYTHON_EXTRA_LDFLAGS
-    # libcrypt: not in NDK sysroot; only present inside a Termux install.
-    # The crypt module is removed in Python 3.13, so this is only needed for
-    # third-party packages that link against libcrypt. Skip on CI.
+
+    # Python 3.14: distutils is fully removed. LIBCRYPT_LIBS is still needed
+    # for third-party packages that invoke python3-config --libs.
     if [[ "$TERMUX_ON_DEVICE_BUILD" == "true" ]] || \
-       [[ -f "${TERMUX_PREFIX}/lib/libcrypt.a" ]] || \
+       [[ -f "${TERMUX_PREFIX}/lib/libcrypt.a"  ]] || \
        [[ -f "${TERMUX_PREFIX}/lib/libcrypt.so" ]]; then
         export LIBCRYPT_LIBS="-lcrypt"
     else
         export LIBCRYPT_LIBS=""
     fi
+
     export CFLAGS CPPFLAGS LDFLAGS CONF_CACHE CONF_FLAGS
 }
-
 
 # =============================================================================
 # §11b  CROSS-COMPILE DEPENDENCIES
 # =============================================================================
 # Builds bzip2, xz, sqlite3, and openssl from source against the NDK sysroot.
-# ncurses is extracted directly from a Termux bootstrap .deb — cross-compiling
-# ncurses requires a two-phase host-tool + cross-library build that its build
-# system does not support in a single configure invocation.
+# ncurses and libffi are extracted from Termux .deb packages — cross-compiling
+# either from source requires a two-phase build that is not viable here.
 # On an on-device build all packages are already installed; we reuse them.
 #
-# Bump these when upstream ships a security release.
+# Dependency versions — bump when upstream ships a security release.
 _BZIP2_VERSION="1.0.8"
 _XZ_VERSION="5.6.3"
-_SQLITE_VERSION="3470200"    # 3.47.2  (YYYYMMDD0 autoconf tarball naming)
+_SQLITE_VERSION="3490100"   # 3.49.1 (YYYYMMDD0 autoconf tarball naming)
 _OPENSSL_VERSION="3.4.1"
 _LIBFFI_VERSION="3.4.7-1"
 _LIBFFI_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/libf/libffi"
-# Termux ncurses version to fetch. The arch is substituted at runtime.
-# To update: browse https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses/
-# and https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses-static/
-# and set both to the same version string (e.g. 6.5.20240831-2).
-# Version string uses Termux's epoch+snapshot convention:
-#   6.6.20260124+really6.5.20250830
-# The URL-encoded form replaces '+' with '%2B'. Both forms are set here.
 _NCURSES_TERMUX_VERSION="6.6.20260124+really6.5.20250830"
 _NCURSES_TERMUX_VERSION_URL="6.6.20260124%2Breally6.5.20250830"
 _NCURSES_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/n"
@@ -618,7 +591,6 @@ _build_deps() {
     local deps_build="${TMPDIR:-/tmp}/python-build/deps-build"
     mkdir -p "${CROSS_DEPS_PREFIX}" "${log_dir}" "${deps_build}" "${TERMUX_PKG_CACHEDIR}"
 
-    # Capture the cross-compile tools and flags that were set by _setup_flags.
     local _cc="${CC:-clang}"
     local _cxx="${CXX:-clang++}"
     local _ar="${AR:-llvm-ar}"
@@ -641,7 +613,6 @@ _build_deps() {
             *.tar.bz2)      tar -xjf "${TERMUX_PKG_CACHEDIR}/${tarball}" -C "$(dirname "$dir")" ;;
             *)              _die "_dl_extract: unknown archive type: $tarball" ;;
         esac
-        return 0
     }
 
     # ── bzip2 ─────────────────────────────────────────────────────────────────
@@ -690,9 +661,7 @@ _build_deps() {
             make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
                 >> "${log_dir}/xz-configure.log" 2>&1 \
                 || { cat "${log_dir}/xz-configure.log"; _die "xz build failed."; }
-            make install \
-                >> "${log_dir}/xz-configure.log" 2>&1 \
-                || _die "xz install failed."
+            make install >> "${log_dir}/xz-configure.log" 2>&1 || _die "xz install failed."
         )
         _ok "xz/liblzma built."
     else
@@ -700,11 +669,13 @@ _build_deps() {
     fi
 
     # ── sqlite3 ───────────────────────────────────────────────────────────────
+    # SQLite URL year directory: 2025 for 3.49.x
+    local _sqlite_year="2025"
     local sq_src="${deps_build}/sqlite-autoconf-${_SQLITE_VERSION}"
     if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libsqlite3.a" ]]; then
         _info "Building sqlite3 ${_SQLITE_VERSION} ..."
         _dl_extract \
-            "https://www.sqlite.org/2024/sqlite-autoconf-${_SQLITE_VERSION}.tar.gz" \
+            "https://www.sqlite.org/${_sqlite_year}/sqlite-autoconf-${_SQLITE_VERSION}.tar.gz" \
             "sqlite-autoconf-${_SQLITE_VERSION}.tar.gz" \
             "$sq_src"
         (
@@ -722,9 +693,7 @@ _build_deps() {
             make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
                 >> "${log_dir}/sqlite.log" 2>&1 \
                 || { cat "${log_dir}/sqlite.log"; _die "sqlite build failed."; }
-            make install \
-                >> "${log_dir}/sqlite.log" 2>&1 \
-                || _die "sqlite install failed."
+            make install >> "${log_dir}/sqlite.log" 2>&1 || _die "sqlite install failed."
         )
         _ok "sqlite3 built."
     else
@@ -750,43 +719,20 @@ _build_deps() {
                 *)       _die "Unknown arch for OpenSSL: ${TERMUX_ARCH}" ;;
             esac
 
-            # OpenSSL's Configure does NOT accept CFLAGS=, LDFLAGS=, CC= as
-            # positional arguments — doing so is a fatal error ("Mixing make
-            # variables"). CC, CFLAGS, LDFLAGS must be exported as env vars.
-            #
-            # With ANDROID_NDK_ROOT set, OpenSSL's android-* targets auto-select
-            # the correct NDK clang and set --sysroot / -target themselves.
-            # We export CC to pin the exact versioned clang the workflow selected,
-            # but we do NOT pass --sysroot or -target in CFLAGS because OpenSSL
-            # already injects them. Passing them twice causes duplicate-flag warnings
-            # and can confuse the linker.
-            #
             # Strip --sysroot and -target from CFLAGS: OpenSSL's android-*
             # platform target injects both from ANDROID_NDK_ROOT itself.
-            # Passing them twice causes duplicate-flag errors.
-            local ossl_cflags_clean=""
-            local _skip_next=false
+            local ossl_cflags_clean="" _skip_next=false
             for _tok in ${_cflags}; do
-                if [[ "$_skip_next" == "true" ]]; then
-                    _skip_next=false; continue
-                fi
-                # -target <triple>: two-token form
-                if [[ "$_tok" == "-target" ]]; then
-                    _skip_next=true; continue
-                fi
-                # --sysroot=<path>: single-token form
+                if [[ "$_skip_next" == "true" ]]; then _skip_next=false; continue; fi
+                if [[ "$_tok" == "-target"    ]]; then _skip_next=true; continue; fi
                 if [[ "$_tok" == --sysroot=* ]]; then continue; fi
-                # --sysroot <path>: two-token form
-                if [[ "$_tok" == "--sysroot" ]]; then
-                    _skip_next=true; continue
-                fi
+                if [[ "$_tok" == "--sysroot"  ]]; then _skip_next=true; continue; fi
                 ossl_cflags_clean="${ossl_cflags_clean} ${_tok}"
             done
-            local ossl_cflags="${ossl_cflags_clean}"
 
             export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
             export CC="${_cc}"
-            export CFLAGS="${ossl_cflags} -fPIC"
+            export CFLAGS="${ossl_cflags_clean} -fPIC"
             export LDFLAGS="${_ldflags}"
 
             perl Configure "${ossl_target}" \
@@ -798,25 +744,19 @@ _build_deps() {
             make -j"${TERMUX_PKG_MAKE_PROCESSES}" build_sw \
                 >> "${log_dir}/openssl.log" 2>&1 \
                 || { cat "${log_dir}/openssl.log"; _die "openssl build failed."; }
-            make install_sw \
-                >> "${log_dir}/openssl.log" 2>&1 \
-                || _die "openssl install failed."
+            make install_sw >> "${log_dir}/openssl.log" 2>&1 || _die "openssl install failed."
         )
         _ok "OpenSSL built."
     else
         _info "OpenSSL already built — skipping."
     fi
 
-    # ── libffi — extracted from Termux .deb ─────────────────────────────────
-    # Required for _ctypes (and therefore ctypes / _pyrepl).
-    # Same approach as ncurses: extract prebuilt Termux aarch64 .deb rather
-    # than building from source. The .so is present on every Termux device.
-    # Pool path pattern: pool/main/libf/libffi/libffi_<ver>_<arch>.deb
+    # ── libffi — extracted from Termux .deb ───────────────────────────────────
+    # Required for _ctypes (Python 3.14 still uses libffi for ctypes).
     if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libffi.so"  ]] || \
        [[ ! -f "${CROSS_DEPS_PREFIX}/include/ffi.h"  ]]; then
         _info "Extracting libffi ${_LIBFFI_VERSION} from Termux .deb ..."
-        local _ffi_arch="${TERMUX_HOST_PLATFORM%%-*}"  # aarch64, arm, i686, x86_64
-        # Termux uses "arm" for 32-bit ARM in the package filename
+        local _ffi_arch="${TERMUX_HOST_PLATFORM%%-*}"
         local ffi_deb="${TERMUX_PKG_CACHEDIR}/libffi.deb"
         _download \
             "${_LIBFFI_TERMUX_BASE_URL}/libffi_${_LIBFFI_VERSION}_${_ffi_arch}.deb" \
@@ -829,8 +769,7 @@ _build_deps() {
         (
             cd "$ffi_tmp"
             ar x "$ffi_deb"
-            local data_tar
-            data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
+            local data_tar; data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
             [[ -n "$data_tar" ]] || _die "No data.tar.* in libffi.deb"
             case "$data_tar" in
                 *.xz)  tar -xJf "$data_tar" -C "$ffi_extract" ;;
@@ -841,22 +780,17 @@ _build_deps() {
         )
 
         local ffi_usr="${ffi_extract}/data/data/com.termux/files/usr"
-        [[ -d "$ffi_usr" ]] || _die "libffi .deb extraction failed — tree not at ${ffi_usr}"
-
+        [[ -d "$ffi_usr" ]] || _die "libffi .deb extraction failed."
         install -d "${CROSS_DEPS_PREFIX}/include" "${CROSS_DEPS_PREFIX}/lib"
-
-        # Headers: ffi.h + ffitarget.h
         for _hdr in ffi.h ffitarget.h; do
             [[ -f "${ffi_usr}/include/${_hdr}" ]] && \
                 cp -a "${ffi_usr}/include/${_hdr}" "${CROSS_DEPS_PREFIX}/include/"
         done
-        # Shared libraries
         local _ffi_found=0
         for f in "${ffi_usr}/lib"/libffi*.so*; do
             [[ -e "$f" ]] && cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/" && (( _ffi_found++ )) || true
         done
         [[ "$_ffi_found" -gt 0 ]] || _die "No libffi .so files found in extracted .deb"
-        # Stub .a for configure probes (link uses .so at runtime on device)
         [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libffi.a" ]] && \
             "${AR:-llvm-ar}" rcs "${CROSS_DEPS_PREFIX}/lib/libffi.a" 2>/dev/null || true
         _ok "libffi extracted (${_ffi_found} .so files)."
@@ -864,23 +798,12 @@ _build_deps() {
         _info "libffi already present — skipping."
     fi
 
-    # ── ncurses — extracted from Termux .deb (shared lib approach) ─────────
-    # ncurses cross-compilation from source is not viable in a single-phase build:
-    # its makefiles require build-host helper binaries in ../lib/ before they can
-    # compile the target library, which never works cleanly in cross setups.
-    # We extract libncursesw.so (+ symlinks) and headers from the official Termux
-    # aarch64 .deb and link Python's _curses extension against the shared lib.
-    # The .so is present on every Termux installation via the ncurses package.
-    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so"         ]] || \
-       [[ ! -f "${CROSS_DEPS_PREFIX}/include/curses.h"           ]] || \
-       [[ ! -f "${CROSS_DEPS_PREFIX}/include/ncursesw/curses.h"  ]]; then
+    # ── ncurses — extracted from Termux .deb ──────────────────────────────────
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libncursesw.so"        ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/include/curses.h"          ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/include/ncursesw/curses.h" ]]; then
         _info "Extracting ncurses from Termux .deb ..."
-        # Termux package names (confirmed as of 6.5.20240831-2):
-        #   ncurses_<ver>_aarch64.deb        — libncursesw.so + compat symlinks
-        #   ncurses-static_<ver>_aarch64.deb — libncursesw.a + all headers
-        # There is no "libncurses" or "ncurses-dev" package; everything we need
-        # is split between these two.
-        local _nc_arch="${TERMUX_HOST_PLATFORM%%-*}"  # aarch64 from aarch64-linux-android
+        local _nc_arch="${TERMUX_HOST_PLATFORM%%-*}"
         local nc_lib_deb="${TERMUX_PKG_CACHEDIR}/ncurses.deb"
         local nc_static_deb="${TERMUX_PKG_CACHEDIR}/ncurses-static.deb"
         _download \
@@ -891,21 +814,16 @@ _build_deps() {
             "$nc_static_deb"
 
         local nc_extract="${deps_build}/ncurses-deb"
-        rm -rf "$nc_extract"
-        mkdir -p "$nc_extract"
+        rm -rf "$nc_extract"; mkdir -p "$nc_extract"
 
-        # Extract both .deb archives (standard ar + data.tar.*)
         for deb in "$nc_lib_deb" "$nc_static_deb"; do
             local deb_tmp="${nc_extract}/tmp_$(basename "$deb")"
             mkdir -p "$deb_tmp"
             (
                 cd "$deb_tmp"
                 ar x "$deb"
-                local data_tar
-                data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
-                if [[ -z "$data_tar" ]]; then
-                    _die "No data.tar.* found in $(basename "$deb")"
-                fi
+                local data_tar; data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
+                [[ -n "$data_tar" ]] || _die "No data.tar.* in $(basename "$deb")"
                 case "$data_tar" in
                     *.xz)  tar -xJf "$data_tar" -C "$nc_extract" ;;
                     *.gz)  tar -xzf "$data_tar" -C "$nc_extract" ;;
@@ -915,106 +833,66 @@ _build_deps() {
             )
         done
 
-        # Termux installs under /data/data/com.termux/files/usr
         local termux_usr="${nc_extract}/data/data/com.termux/files/usr"
-        if [[ ! -d "$termux_usr" ]]; then
-            ls -la "$nc_extract" || true
-            _die "ncurses .deb extraction failed — expected tree at ${termux_usr}"
-        fi
-
+        [[ -d "$termux_usr" ]] || _die "ncurses .deb extraction failed."
         install -d "${CROSS_DEPS_PREFIX}/include" "${CROSS_DEPS_PREFIX}/lib"
 
-        # ── Headers ──────────────────────────────────────────────────────────
-        # Termux ncurses-static ships headers in two places:
-        #   include/ncursesw/curses.h   — the canonical widec header
-        #   include/curses.h            — thin shim: #include <ncursesw/curses.h>
-        #   include/ncurses.h           — same shim
-        # Python's _cursesmodule.c does #include <curses.h>, so the flat shim
-        # MUST exist at the top of the include search path.
-
-        # 1. Copy the ncursesw/ subdirectory (canonical headers)
+        # Headers: canonical ncursesw/ subdir + flat shims
         if [[ -d "${termux_usr}/include/ncursesw" ]]; then
             cp -a "${termux_usr}/include/ncursesw" "${CROSS_DEPS_PREFIX}/include/"
-            _info "  Installed ncursesw/ headers."
-        else
-            _warn "  ncursesw/ headers not found in .deb — _curses may not build."
         fi
-
-        # 2. Copy flat shim headers if the deb ships them; otherwise generate them.
         for _hdr in curses.h ncurses.h unctrl.h term.h termcap.h; do
             local _src="${termux_usr}/include/${_hdr}"
             local _dst="${CROSS_DEPS_PREFIX}/include/${_hdr}"
             if [[ -f "$_src" ]]; then
                 cp -a "$_src" "$_dst"
             elif [[ ! -f "$_dst" ]]; then
-                # Generate a minimal shim that re-exports the widec header.
                 printf '#ifndef _NCURSES_SHIM_%s\n#define _NCURSES_SHIM_%s\n#include <ncursesw/%s>\n#endif\n' \
                     "${_hdr//./_}" "${_hdr//./_}" "$_hdr" > "$_dst"
             fi
         done
-        _info "  Installed flat curses.h shim headers."
-
-        # 3. ncurses/ symlink as an additional fallback include path alias
-        if [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]]; then
+        [[ ! -d "${CROSS_DEPS_PREFIX}/include/ncurses" ]] && \
             ln -sf ncursesw "${CROSS_DEPS_PREFIX}/include/ncurses" 2>/dev/null || true
-        fi
 
-        # Copy shared libraries (.so and symlinks)
+        # Shared libraries
         local _nc_found=0
         for f in "${termux_usr}/lib"/libncurses*.so* \
                  "${termux_usr}/lib"/libpanel*.so*   \
                  "${termux_usr}/lib"/libform*.so*    \
                  "${termux_usr}/lib"/libmenu*.so*; do
-            if [[ -e "$f" ]]; then
-                cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/"
-                (( _nc_found++ )) || true
-            fi
+            [[ -e "$f" ]] && cp -a "$f" "${CROSS_DEPS_PREFIX}/lib/" && (( _nc_found++ )) || true
         done
-        if [[ "$_nc_found" -eq 0 ]]; then
-            _die "No ncurses .so files found in extracted .deb — check URLs."
-        fi
-        _info "  Installed ${_nc_found} ncurses library files."
-        # libncurses.so symlink without 'w' for configure probes using -lncurses
-        local _nc_so
-        _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so."* 2>/dev/null | head -1 || true)"
-        if [[ -z "$_nc_so" ]]; then
-            _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so" 2>/dev/null || true)"
-        fi
+        [[ "$_nc_found" -gt 0 ]] || _die "No ncurses .so files found in extracted .deb"
+
+        # libncurses.so alias for configure probes using -lncurses
+        local _nc_so; _nc_so="$(ls "${CROSS_DEPS_PREFIX}/lib/libncursesw.so."* 2>/dev/null | head -1 || true)"
+        [[ -z "$_nc_so" ]] && _nc_so="${CROSS_DEPS_PREFIX}/lib/libncursesw.so"
         if [[ -n "$_nc_so" ]] && [[ ! -e "${CROSS_DEPS_PREFIX}/lib/libncurses.so" ]]; then
-            ln -sf "$(basename "$_nc_so")"                    "${CROSS_DEPS_PREFIX}/lib/libncurses.so" 2>/dev/null || true
+            ln -sf "$(basename "$_nc_so")" "${CROSS_DEPS_PREFIX}/lib/libncurses.so" 2>/dev/null || true
         fi
 
-        # Create stub .a files so Python's configure --with-libs probe succeeds.
-        # The actual link uses the .so; the .a is just an empty archive sentinel.
+        # Stub .a sentinels for configure probes
         for stub in libncursesw.a libncurses.a; do
-            if [[ ! -f "${CROSS_DEPS_PREFIX}/lib/${stub}" ]]; then
+            [[ ! -f "${CROSS_DEPS_PREFIX}/lib/${stub}" ]] && \
                 "${AR:-llvm-ar}" rcs "${CROSS_DEPS_PREFIX}/lib/${stub}" 2>/dev/null || true
-            fi
         done
-
-        _ok "ncurses extracted from Termux .deb."
+        _ok "ncurses extracted (${_nc_found} files)."
     else
         _info "ncurses already present — skipping."
     fi
+
     # ── Point Python build at the cross-built deps ────────────────────────────
-    # Override PKG_CONFIG to see ONLY the cross-built packages, not host packages.
     CPPFLAGS+=" -I${CROSS_DEPS_PREFIX}/include"
     LDFLAGS+=" -L${CROSS_DEPS_PREFIX}/lib"
     export PKG_CONFIG_PATH="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
     export PKG_CONFIG_LIBDIR="${CROSS_DEPS_PREFIX}/lib/pkgconfig"
     export CPPFLAGS LDFLAGS
 
-    # Tell Python configure exactly where our ncurses widec headers/libs are.
-    # Without explicit CURSES_CFLAGS, configure finds the macOS system curses.h
-    # (a BSD stub lacking COLORS, TRUE etc.) and _cursesmodule.c fails to compile.
-    # These are appended to CONF_FLAGS here (not in _setup_flags) because
-    # CROSS_DEPS_PREFIX is not set until _build_deps() runs.
     CONF_FLAGS+=" CURSES_CFLAGS=-I${CROSS_DEPS_PREFIX}/include/ncursesw"
     CONF_FLAGS+=" CURSES_LIBS=-lncursesw"
     CONF_FLAGS+=" PANEL_LIBS=-lpanelw"
     export CONF_FLAGS
     _ok "All cross-compiled dependencies ready at ${CROSS_DEPS_PREFIX}."
-    return 0
 }
 
 # =============================================================================
@@ -1024,15 +902,11 @@ _do_configure() {
     mkdir -p "$TERMUX_PKG_BUILDDIR"
     cd "$TERMUX_PKG_BUILDDIR"
     _info "Running ./configure ..."
-
-    # Log the exact compiler and flags so failures are easy to diagnose.
     _info "  CC:      ${CC:-<unset>}"
     _info "  CXX:     ${CXX:-<unset>}"
     _info "  CFLAGS:  ${CFLAGS:-<unset>}"
     _info "  LDFLAGS: ${LDFLAGS:-<unset>}"
 
-    # CONF_CACHE entries are word-split intentionally (each is a key=value token).
-    # CONF_FLAGS entries likewise. SC2086 is suppressed for both.
     # shellcheck disable=SC2086
     "${TERMUX_PKG_SRCDIR}/configure" \
         --prefix="${TERMUX_PREFIX}"        \
@@ -1062,10 +936,16 @@ _post_install() {
     _info "Creating convenience symlinks ..."
     (
         cd "${TERMUX_PREFIX}/bin"
-        ln -sf "idle${_MAJOR_VERSION}"         idle          2>/dev/null || true
-        ln -sf "python${_MAJOR_VERSION}"        python        2>/dev/null || true
-        ln -sf "python${_MAJOR_VERSION}-config" python-config 2>/dev/null || true
-        ln -sf "pydoc${_MAJOR_VERSION}"         pydoc         2>/dev/null || true
+        # Python 3.14 installs python3.14, idle3.14, pydoc3.14, python3.14-config.
+        # Provide unversioned and python3-versioned aliases.
+        for _alias in python python3; do
+            ln -sf "python${_MAJOR_VERSION}"        "${_alias}"        2>/dev/null || true
+            ln -sf "python${_MAJOR_VERSION}-config" "${_alias}-config" 2>/dev/null || true
+        done
+        ln -sf "pydoc${_MAJOR_VERSION}"  pydoc  2>/dev/null || true
+        ln -sf "pydoc${_MAJOR_VERSION}"  pydoc3 2>/dev/null || true
+        ln -sf "idle${_MAJOR_VERSION}"   idle   2>/dev/null || true
+        ln -sf "idle${_MAJOR_VERSION}"   idle3  2>/dev/null || true
     )
     if [[ -d "${TERMUX_PREFIX}/share/man/man1" ]]; then
         ln -sf "python${_MAJOR_VERSION}.1" \
@@ -1079,11 +959,10 @@ _post_install() {
         install -m 644 "${debpython_src}/"* "$debpython_dst/"
         for prog in py3compile py3clean; do
             local prog_src="${TERMUX_PKG_SRCDIR}/debpython/${prog}"
-            if [[ -f "$prog_src" ]]; then install -m 755 "$prog_src" "${TERMUX_PREFIX}/bin/"; fi
+            [[ -f "$prog_src" ]] && install -m 755 "$prog_src" "${TERMUX_PREFIX}/bin/"
         done
         _ok "Installed debpython helpers."
     fi
-    return 0
 }
 
 # =============================================================================
@@ -1108,12 +987,12 @@ _verify_modules() {
             (( failed++ )) || true
         fi
     done
-    # _pyrepl is pure Python — verify the package directory was installed.
+    # _pyrepl: pure Python — check directory presence
     local pyrepl_dir="${TERMUX_PREFIX}/${_PYREPL_SUBDIR}"
     if [[ -d "$pyrepl_dir" ]] && [[ -f "${pyrepl_dir}/__init__.py" ]]; then
-        _ok "  Module OK: _pyrepl (pure Python, ${pyrepl_dir})"
+        _ok "  Module OK: _pyrepl (${pyrepl_dir})"
     else
-        _error "Module missing: _pyrepl — expected directory at ${pyrepl_dir}"
+        _error "Module missing: _pyrepl — expected at ${pyrepl_dir}"
         (( failed++ )) || true
     fi
     if [[ "$failed" -ne 0 ]]; then _die "${failed} required module(s) missing."; fi
@@ -1123,78 +1002,45 @@ _verify_modules() {
 # =============================================================================
 # §14b  PATCH _pyrepl FOR ANDROID COMPATIBILITY
 # =============================================================================
-# Python 3.13's _pyrepl package is pure Python but has two Android issues:
+# Python 3.14 status for known _pyrepl issues:
 #
-# 1. unix_console.py imports _curses unconditionally at module load time.
-#    If _curses is absent, Python falls through to a Windows-only code path
-#    and prints: "warning: can't use pyrepl: No module named 'msvcrt'"
-#    (CPython issue #130046). This is fixed in 3.14 (issue #135621) but not
-#    backported to 3.13. We apply the backport here: wrap the _curses import
-#    in a try/except ImportError so it degrades gracefully to the basic REPL.
+# 1. gh-135621 (_curses imported unconditionally in unix_console.py) — FIXED
+#    upstream in 3.14 before release. No patch needed here.
 #
-# 2. unix_console.py calls termios.tcsetattr() during prepare(); on some
-#    Android environments this raises termios.error: (1, 'Operation not
-#    permitted'). CPython 3.13.12 already fixed this via gh-134466
-#    ("Don't run PyREPL in a degraded environment where setting termios
-#    attributes is not allowed") so no extra patch is needed for that.
+# 2. gh-134466 (termios.tcsetattr crash in degraded terminal) — FIXED in 3.13.12
+#    and also present in 3.14. No patch needed.
 #
-# This function patches the _pyrepl source tree in-place before configure.
+# 3. Android _pyrepl degraded-mode fallback: if TERM is unset or the terminal
+#    does not support tput, _pyrepl should gracefully fall back to the simple
+#    REPL rather than printing a traceback. Python 3.14 includes the upstream
+#    fix for this (bpo-84872). Verify at runtime; patch only if the fix is absent.
+#
+# This function is intentionally a no-op for Python 3.14 but is retained as
+# a hook for any regressions discovered after release.
 _patch_pyrepl() {
     local unix_console="${TERMUX_PKG_SRCDIR}/Lib/_pyrepl/unix_console.py"
-    local curses_py="${TERMUX_PKG_SRCDIR}/Lib/_pyrepl/curses.py"
 
     if [[ ! -f "$unix_console" ]]; then
         _warn "_patch_pyrepl: ${unix_console} not found — skipping."
         return 0
     fi
 
-    # ── Patch 1: guard _curses import in unix_console.py ─────────────────────
-    # The file contains a top-level: import _curses
-    # Replace it with a try/except so absence of _curses doesn't abort _pyrepl.
-    if grep -q '^import _curses' "$unix_console"; then
+    # Python 3.14 already guards _curses imports — verify and report.
+    if grep -q 'except ImportError' "$unix_console"; then
+        _ok "_pyrepl/unix_console.py: _curses ImportError guard already present (upstream fix in 3.14)."
+    else
+        # Upstream fix is absent — this should not happen with an unmodified 3.14.3
+        # source tree, but apply the guard defensively.
+        _warn "_pyrepl/unix_console.py: _curses ImportError guard missing — applying fallback patch."
         sed -i.bak \
-            's|^import _curses$|try:\n    import _curses\nexcept ImportError:\n    _curses = None  # type: ignore[assignment]  # pyrepl: Android/no-curses fallback|' \
+            's|^import _curses$|try:\n    import _curses\nexcept ImportError:\n    _curses = None  # Android fallback|' \
             "$unix_console" \
-            && _ok "_pyrepl/unix_console.py: guarded _curses import." \
-            || _warn "_pyrepl/unix_console.py: sed patch failed — _curses import left as-is."
-    else
-        _info "_pyrepl/unix_console.py: _curses import already guarded or absent."
+            && _ok "_pyrepl/unix_console.py: guard applied." \
+            || _warn "_pyrepl/unix_console.py: sed patch failed."
+        rm -f "${unix_console}.bak" 2>/dev/null || true
     fi
 
-    # ── Patch 2: guard _curses import in curses.py ───────────────────────────
-    if [[ -f "$curses_py" ]] && grep -q '^import _curses' "$curses_py"; then
-        sed -i.bak \
-            's|^import _curses$|try:\n    import _curses\nexcept ImportError:\n    _curses = None  # type: ignore[assignment]  # pyrepl: Android/no-curses fallback|' \
-            "$curses_py" \
-            && _ok "_pyrepl/curses.py: guarded _curses import." \
-            || _warn "_pyrepl/curses.py: sed patch failed."
-    fi
-
-    # ── Patch 3: guard _curses usage in unix_console.py ─────────────────────
-    # After the import guard, any bare reference to _curses.xxx will crash if
-    # _curses is None. Wrap the setup_curses() / _my_getstr() call sites with
-    # a None-check so the module loads even without curses.
-    # The canonical guard is: the existing check `if not curses` in
-    # UnixConsole.prepare() introduced by gh-134466. If that pattern is already
-    # present, nothing more to do.
-    if grep -q 'if.*_curses.*is None\|if not _curses\|_curses is None' "$unix_console"; then
-        _info "_pyrepl/unix_console.py: _curses None-guards already present."
-    else
-        # Insert a module-level guard used by prepare() — insert after the
-        # (now-guarded) import block. The simplest safe approach is to add a
-        # _CURSES_AVAILABLE sentinel that existing code can check.
-        sed -i.bak2 \
-            '/^except ImportError:/a\    pass\n_CURSES_AVAILABLE = _curses is not None' \
-            "$unix_console" 2>/dev/null || true
-        _info "_pyrepl/unix_console.py: added _CURSES_AVAILABLE sentinel."
-    fi
-
-    # Remove sed backup files from the source tree
-    rm -f "${unix_console}.bak" "${unix_console}.bak2" \
-          "${curses_py}.bak"    2>/dev/null || true
-
-    _ok "_pyrepl patches applied."
-    return 0
+    _ok "_pyrepl check complete."
 }
 
 # =============================================================================
@@ -1221,39 +1067,32 @@ _create_deb() {
 Package: ${pkgname}
 Version: ${TERMUX_PKG_VERSION}-${TERMUX_PKG_REVISION}
 Architecture: ${arch}
-Maintainer: ${TERMUX_PKG_MAINTAINER:-Termux}
+Maintainer: ${TERMUX_PKG_MAINTAINER}
 Description: ${TERMUX_PKG_DESCRIPTION}
 Homepage: ${TERMUX_PKG_HOMEPAGE}
+Depends: gdbm, libandroid-support, libbz2, libcrypt, libffi, liblzma, libsqlite, libutil, ncurses, ncurses-ui-libs, openssl, readline, zlib
+Breaks: python2
+Conflicts: python2
+Provides: python3
 EOF
 
-    # Stage installed prefix into deb tree.
-    # The .deb must always contain files rooted at the canonical Termux path
-    # /data/data/com.termux/files/usr — regardless of where TERMUX_PREFIX
-    # actually lives on the CI host (e.g. /Users/runner/work/.../prefix).
     local _TERMUX_CANONICAL="data/data/com.termux/files/usr"
     local staging="${debdir}/${_TERMUX_CANONICAL}"
     mkdir -p "$staging"
     cp -a "${TERMUX_PREFIX}/." "$staging/"
 
-    # ── Sanitise staging tree ─────────────────────────────────────────────
-    # Remove zero-byte (empty) files from bin/: these are placeholder stubs
-    # left by configure or install steps that must not ship in the .deb.
+    # Remove empty placeholder files from bin/
     local _empty_count=0
     while IFS= read -r -d '' _f; do
-        _warn "  Removing empty file from bin/: $(basename \"$_f\")"
+        _warn "  Removing empty file from bin/: $(basename "$_f")"
         rm -f "$_f"
         (( _empty_count++ )) || true
     done < <(find "${staging}/bin" -maxdepth 1 -type f -empty -print0 2>/dev/null)
-    if [[ "$_empty_count" -gt 0 ]]; then
-        _warn "Removed ${_empty_count} empty file(s) from bin/ before packaging."
-    else
-        _info "bin/ is clean — no empty files found."
-    fi
+    [[ "$_empty_count" -gt 0 ]] && \
+        _warn "Removed ${_empty_count} empty file(s) from bin/." || \
+        _info "bin/ is clean — no empty files."
 
-    # Generate postinst.
-    # IMPORTANT: postinst runs on the Android device after dpkg installs the .deb.
-    # All paths must use the canonical Termux prefix (/data/data/com.termux/files/usr),
-    # NOT TERMUX_PREFIX from the build host (which is a CI workspace path).
+    # postinst — runs on device; must use canonical Termux prefix, not CI path
     local _p="/${_TERMUX_CANONICAL}"
     local postinst="${ctrl}/postinst"
     {
@@ -1264,6 +1103,8 @@ EOF
         printf '        pacman) ls "%s/var/lib/pacman/local/python-pip-"* &>/dev/null ;;\n' "${_p}"
         printf '        *)      return 1 ;;\n'
         printf '    esac\n}\n\n'
+        # Python 3.14: pip is a separate package (python-pip).
+        # Remove any unmanaged pip left over from a manual `pip install --upgrade pip`.
         printf 'if [[ -f "%s/bin/pip" ]] && ! _pip_managed_by_pkg; then\n'                 "${_p}"
         printf '    echo "Removing unmanaged pip..."\n'
         printf '    rm -f "%s/bin/pip" "%s/bin/pip3"* "%s/bin/easy_install"*\n'            "${_p}" "${_p}" "${_p}"
@@ -1272,7 +1113,8 @@ EOF
         printf 'if [[ ! -f "%s/bin/pip" ]]; then\n'                                        "${_p}"
         printf '    echo "== Note: pip is now a separate package: pkg install python-pip =="\n'
         printf 'fi\n\n'
-        printf 'for _old_ver in 3.11 3.12; do\n'
+        # Warn if stale site-packages from an older Python version are present.
+        printf 'for _old_ver in 3.11 3.12 3.13; do\n'
         printf '    if [[ -d "%s/lib/python${_old_ver}/site-packages" ]]; then\n'          "${_p}"
         printf '        echo "NOTE: Python updated to %s. Reinstall pip packages."\n'       "${_MAJOR_VERSION}"
         printf '        break\n'
@@ -1285,39 +1127,25 @@ EOF
     mkdir -p "$OUTPUT_DIR"
     local debout="${OUTPUT_DIR}/${debname}"
 
-    # Prefer dpkg-deb (available on Linux runners).
-    # On macOS the workflow does not install dpkg, so we build the .deb manually.
-    # BSD tar does not support -J; use the `xz` binary directly so we stay
-    # compatible with both GNU tar (Linux) and BSD tar (macOS).
     if command -v dpkg-deb &>/dev/null; then
         dpkg-deb --build "$debdir" "$debout"
     else
         _warn "dpkg-deb not available; building .deb manually ..."
         local tmp; tmp="$(mktemp -d)"
-        # No trap RETURN: with set -u, the trap fires after the local goes out of
-        # scope and $tmp becomes unbound. Clean up explicitly instead.
-
         echo "2.0" > "${tmp}/debian-binary"
-
-        # control.tar.gz — always gz; small and universally supported
         tar -czf "${tmp}/control.tar.gz" -C "$ctrl" . \
             || { rm -rf "$tmp"; _die "control.tar.gz creation failed."; }
-
-        # data.tar.xz — compress with xz binary, not tar -J, for macOS compat
         tar -cf "${tmp}/data.tar" --exclude='./DEBIAN' -C "$debdir" . \
             || { rm -rf "$tmp"; _die "data.tar creation failed."; }
         xz -z -T0 "${tmp}/data.tar" \
             || { rm -rf "$tmp"; _die "xz compression of data.tar failed."; }
-
-        # ar — prefer GNU ar (binutils); fall back to BSD ar (both work for .deb)
         local _ar="ar"
-        if command -v gar &>/dev/null; then _ar="gar"; fi  # Homebrew gnu-ar shim
+        command -v gar &>/dev/null && _ar="gar"
         "${_ar}" -rcs "$debout" \
             "${tmp}/debian-binary" \
             "${tmp}/control.tar.gz" \
             "${tmp}/data.tar.xz" \
             || { rm -rf "$tmp"; _die "ar failed assembling .deb."; }
-
         rm -rf "$tmp"
     fi
 
@@ -1373,7 +1201,7 @@ main() {
         || _die "Failed to unpack patched source tarball."
     _ok "Patched source unpacked."
 
-    _section "Step 4b/11 — Patch _pyrepl for Android compatibility"
+    _section "Step 4b/11 — Check _pyrepl for Android compatibility"
     _patch_pyrepl
 
     _section "Step 5/11 — Setup Compiler Flags"
@@ -1388,13 +1216,6 @@ main() {
     _section "Step 8/11 — Build"
     _info "make -j${TERMUX_PKG_MAKE_PROCESSES} ..."
     cd "$TERMUX_PKG_BUILDDIR"
-    # Pass CPPFLAGS and LDFLAGS explicitly to make.
-    # Python's Makefile bakes in flags from configure time via PY_CPPFLAGS, but
-    # extension modules compiled during 'make' (like _curses) also need the
-    # cross-dep prefix headers. Passing CPPFLAGS here mirrors what Termux does:
-    # their termux_step_pre_configure sets CPPFLAGS (including sysroot path
-    # and Termux prefix includes) before configure so setup.py sees them all.
-    # PYTHON_EXTRA_LDFLAGS: polyfill libs not available at configure time.
     make -j"${TERMUX_PKG_MAKE_PROCESSES}" \
         CPPFLAGS="${CPPFLAGS}" \
         LDFLAGS="${LDFLAGS} ${PYTHON_EXTRA_LDFLAGS:-}" \

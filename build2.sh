@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Termux Python 3.13.12 — prepare-source.sh
+# Termux Python 3.14.3 — prepare-source.sh
 # =============================================================================
 # PART 1 OF 2: Download CPython + debpython, apply all Termux patches,
 # run autoreconf -fi to regenerate the configure script from the patched
 # configure.ac, then pack the result into a ready-to-configure tarball
-# (python-3.13.12-patched-src.tar.xz) for upload to the GitHub release.
+# (python-3.14.3-patched-src.tar.xz) for upload to the GitHub release.
 #
 # Usage:
 #   bash prepare-source.sh [--clean] [--skip-verify] [--jobs N]
 #
-# Requires: autoconf 2.71, automake, m4, patch, curl/wget, tar
-# Output  : python-3.13.12-patched-src.tar.xz   (in $OUTPUT_DIR)
+# Requires: autoconf 2.71+, automake, m4, patch, curl/wget, tar
+# Output  : python-3.14.3-patched-src.tar.xz   (in $OUTPUT_DIR)
 #
 # Patch files must be present in a patches/ directory alongside this script.
 # =============================================================================
@@ -28,16 +28,16 @@ tmp=""
 # =============================================================================
 # §1  PACKAGE CONSTANTS
 # =============================================================================
-readonly TERMUX_PKG_VERSION="3.13.12"
-readonly TERMUX_PKG_REVISION=3
-readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"   # -> "3.13"
+readonly TERMUX_PKG_VERSION="3.14.3"
+readonly TERMUX_PKG_REVISION=0
+readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"   # -> "3.14"
 readonly _DEBPYTHON_COMMIT="f358ab52bf2932ad55b1a72a29c9762169e6ac47"
 
 # =============================================================================
 # §2  SOURCE URLs + SHA256
 # =============================================================================
-readonly _PYTHON_URL="https://www.python.org/ftp/python/${TERMUX_PKG_VERSION}/Python-${TERMUX_PKG_VERSION}.tgz"
-readonly _PYTHON_SHA256="12e7cb170ad2d1a69aee96a1cc7fc8de5b1e97a2bdac51683a3db016ec9a2996"
+readonly _PYTHON_URL="https://www.python.org/ftp/python/${TERMUX_PKG_VERSION}/Python-${TERMUX_PKG_VERSION}.tar.xz"
+readonly _PYTHON_SHA256="a97d5549e9ad81fe17159ed02c68774ad5d266c72f8d9a0b5a9c371fe85d902b"
 
 readonly _DEBPYTHON_URL="https://salsa.debian.org/cpython-team/python3-defaults/-/archive/${_DEBPYTHON_COMMIT}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz"
 readonly _DEBPYTHON_SHA256="3b7a76c144d39f5c4a2c7789fd4beb3266980c2e667ad36167e1e7a357c684b0"
@@ -75,6 +75,7 @@ _OPT_API_LEVEL="${TERMUX_PKG_API_LEVEL:-35}"
 # Where to write the output tarball
 OUTPUT_DIR="${OUTPUT_DIR:-${_SCRIPT_DIR}/dist}"
 mkdir -p "$OUTPUT_DIR"
+
 # =============================================================================
 # §5  LOGGING
 # =============================================================================
@@ -204,6 +205,25 @@ _check_tools() {
         _error "Missing: curl or wget"
         (( missing++ )) || true
     fi
+
+    # Python 3.14 requires autoconf >= 2.71 for the new configure.ac macros.
+    # Warn (don't die) so that CI environments with 2.69 can still attempt a
+    # build — some patches may compensate — but the warning is important.
+    if command -v autoconf &>/dev/null; then
+        local _ac_ver
+        _ac_ver="$(autoconf --version | head -1 | grep -oE '[0-9]+\.[0-9]+')"
+        local _ac_maj _ac_min
+        _ac_maj="${_ac_ver%%.*}"
+        _ac_min="${_ac_ver#*.}"
+        if (( _ac_maj < 2 )) || { (( _ac_maj == 2 )) && (( _ac_min < 71 )); }; then
+            _warn "autoconf ${_ac_ver} detected — Python 3.14 requires >= 2.71."
+            _warn "Build may fail. Consider: apt install autoconf=2.71 or use the"
+            _warn "Termux build container which ships a compatible version."
+        else
+            _ok "autoconf ${_ac_ver} (>= 2.71 required — OK)"
+        fi
+    fi
+
     (( missing > 0 )) && _die "${missing} required tool(s) missing."
     _ok "All required tools present."
 }
@@ -372,18 +392,19 @@ main() {
     mkdir -p "$CACHEDIR" "$SRCDIR"
 
     _section "Step 3/7 — Download Sources"
+    # Python 3.14 ships .tar.xz only (no .tgz); unpack with -xJf below.
     _download "$_PYTHON_URL" \
-        "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
+        "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tar.xz" \
         "$_PYTHON_SHA256"
     _download "$_DEBPYTHON_URL" \
         "${CACHEDIR}/python3-defaults-${_DEBPYTHON_COMMIT}.tar.gz" \
         "$_DEBPYTHON_SHA256"
 
     _section "Step 4/7 — Unpack"
-    _info "Unpacking Python-${TERMUX_PKG_VERSION}.tgz ..."
+    _info "Unpacking Python-${TERMUX_PKG_VERSION}.tar.xz ..."
     rm -rf "$SRCDIR"
     mkdir -p "$SRCDIR"
-    tar -xzf "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tgz" \
+    tar -xJf "${CACHEDIR}/Python-${TERMUX_PKG_VERSION}.tar.xz" \
         --strip-components=1 -C "$SRCDIR" \
         || _die "Failed to unpack Python tarball."
     _ok "CPython source unpacked."
