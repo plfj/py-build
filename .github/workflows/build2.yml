@@ -62,7 +62,7 @@ jobs:
           chmod +x prepare-source.sh
           OUTPUT_DIR="${GITHUB_WORKSPACE}/dist" \
           TERMUX_PKG_API_LEVEL="${ANDROID_API_LEVEL}" \
-            ./prepare-source.sh
+            ./build2.sh
 
       - name: Show prepared tarball
         run: ls -lh "${GITHUB_WORKSPACE}/dist/"
