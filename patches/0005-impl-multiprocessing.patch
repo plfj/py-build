@@ -1,34 +1,225 @@
-From: Termux Maintainers <maintainers@termux.dev>
-Subject: [PATCH 0005] Implement multiprocessing shared memory for Android
-
-Three changes are bundled here:
-
-1. configure.ac — remove the blanket block of sem_open / sem_unlink.
-   Python 3.14 already unblocks these (they were blocked due to a SELinux
-   policy on Android 13 that has since been relaxed).  Keeping them
-   blocked prevents multiprocessing.shared_memory from working at all.
-
-2. Lib/multiprocessing/heap.py — Android has no /dev/shm; suppress the
-   /dev/shm candidate on Android so the heap falls back to a writable
-   temp directory instead of failing at import time.
-
-3. Modules/_multiprocessing/posixshmem.c — provide a complete Android
-   shm_open / shm_unlink emulation backed by files under
-   $TERMUX_PREFIX/tmp (falling back to $TMPDIR, then /data/local/tmp).
-   The implementation is thread-safe (pthread_once), sets FD_CLOEXEC,
-   and enforces POSIX flat-namespace semantics.
----
- configure.ac                           |   4 -
- Lib/multiprocessing/heap.py            |   4 +-
- Modules/_multiprocessing/posixshmem.c  | 120 +++++++++++++++++++++++++++++++++
- 3 files changed, 123 insertions(+), 5 deletions(-))
-
+diff --git a/Lib/multiprocessing/heap.py b/Lib/multiprocessing/heap.py
+index 6217dfe..544b21f 100644
+--- a/Lib/multiprocessing/heap.py
++++ b/Lib/multiprocessing/heap.py
+@@ -24,6 +24,49 @@
+ # Inheritable class which wraps an mmap, and from which blocks can be allocated
+ #
+ 
++
++_android_cache: bool | None = None
++
++def _is_android() -> bool:
++    """Return True when running on any Android-derived kernel.
++
++    Detection order (most reliable → least):
++      1. sys.platform == 'android'        — CPython 3.13+ sets this on Android
++      2. hasattr(sys, 'getandroidapilevel') — BeeWare/Chaquopy and other
++                                             embeddings expose this attribute
++      3. /proc/sys/kernel/osrelease       — procfs: single 64-byte read, no
++                                            uname(2) syscall, no module import;
++                                            AOSP kernels always contain 'android'
++                                            (e.g. "5.15.104-android13-8-00224-…")
++                                            Only reached on sys.platform=='linux'.
++
++    Result is cached in _android_cache so the procfs read (path 3) happens
++    at most once per interpreter lifetime regardless of call count.
++    """
++    global _android_cache
++    if _android_cache is not None:
++        return _android_cache
++
++    # Paths 1 & 2: zero I/O, available since Python 3.13 / embedding runtimes.
++    if sys.platform == 'android' or hasattr(sys, 'getandroidapilevel'):
++        _android_cache = True
++        return True
++
++    # Path 3: procfs fallback for older CPython on Linux-Android.
++    # /proc/sys/kernel/osrelease is preferred over /proc/version because it
++    # contains *only* the release string (no extra kernel build metadata),
++    # making the 'android' substring check unambiguous and the read cheaper.
++    if sys.platform == 'linux':
++        try:
++            with open('/proc/sys/kernel/osrelease', 'r', encoding='ascii') as fh:
++                _android_cache = 'android' in fh.readline()
++        except OSError:
++            _android_cache = False
++    else:
++        _android_cache = False
++
++    return _android_cache
++
+ if sys.platform == 'win32':
+ 
+     import _winapi
+@@ -68,9 +111,11 @@ class Arena(object):
+         """
+         A shared memory area backed by a temporary file (POSIX).
+         """
+-
+         if sys.platform == 'linux':
+-            _dir_candidates = ['/dev/shm']
++            if _is_android():
++                _dir_candidates = []
++            else:
++                _dir_candidates = ['/dev/shm']
+         else:
+             _dir_candidates = []
+ 
+diff --git a/Modules/_multiprocessing/posixshmem.c b/Modules/_multiprocessing/posixshmem.c
+index ab45e41..ab2a6e6 100644
+--- a/Modules/_multiprocessing/posixshmem.c
++++ b/Modules/_multiprocessing/posixshmem.c
+@@ -17,6 +17,141 @@ posixshmem - A Python extension that provides shm_open() and shm_unlink()
+ #endif
+ 
+ 
++#ifdef __ANDROID__
++#include <errno.h>
++#include <fcntl.h>      /* open, O_CLOEXEC          */
++#include <limits.h>     /* PATH_MAX                  */
++#include <pthread.h>    /* pthread_once              */
++#include <stdlib.h>     /* getenv                    */
++#include <string.h>     /* stpncpy, strnlen, memchr  */
++#include <sys/stat.h>   /* mkdir                     */
++#include <unistd.h>     /* close, unlink             */
++
++/* All internal helpers: static + hidden visibility + no name mangling. */
++#define _ASHM \
++    __attribute__((visibility("hidden"))) static
++
++/* ------------------------------------------------------------------ */
++/* Basedir: resolved and cached exactly once via pthread_once           */
++/* ------------------------------------------------------------------ */
++
++static const char         *_ashm_basedir = NULL;
++static pthread_once_t      _ashm_once    = PTHREAD_ONCE_INIT;
++
++__attribute__((cold))
++_ASHM void
++_ashm_init(void)
++{
++    /*
++     * @TERMUX_PREFIX@ is substituted by Termux's configure wrapper.
++     * When it was not substituted the first byte is still a literal '@'.
++     */
++    static const char termux_tmp[] = "@TERMUX_PREFIX@/tmp";
++
++    if (termux_tmp[0] != '@') {
++        _ashm_basedir = termux_tmp;
++    } else {
++        const char *t = getenv("TMPDIR");
++        _ashm_basedir = (t != NULL && t[0] != '\0') ? t : "/data/local/tmp";
++    }
++
++    /* Best-effort mkdir; EEXIST is fine. Errors surface later via open(2). */
++    (void)mkdir(_ashm_basedir, 0700);
++}
++
++_ASHM const char *
++ashm_basedir(void)
++{
++    (void)pthread_once(&_ashm_once, _ashm_init);
++    return _ashm_basedir;
++}
++
++/* ------------------------------------------------------------------ */
++/* Path construction — no printf, single-pass name validation           */
++/* ------------------------------------------------------------------ */
++
++/*
++ * Build the backing-file path for POSIX shm name into buf[bufsz].
++ *
++ * POSIX semantics enforced:
++ *   - Strip all leading '/' (spec requires at least one).
++ *   - Bare name must be non-empty.
++ *   - No '/' within the bare name (flat namespace).
++ *
++ * Returns 0 on success, -1 with errno set on error.
++ */
++_ASHM int
++ashm_path(const char *name, char *buf, size_t bufsz)
++{
++    /* Strip mandatory leading slash(es). */
++    while (*name == '/')
++        ++name;
++
++    /*
++     * Validate bare name in one pass:
++     *   strnlen → catches empty string
++     *   memchr  → rejects embedded slashes (flat namespace)
++     */
++    size_t nlen = strnlen(name, PATH_MAX);
++    if (nlen == 0 || memchr(name, '/', nlen) != NULL) {
++        errno = EINVAL;
++        return -1;
++    }
++
++    const char *base  = ashm_basedir();
++    size_t      blen  = strnlen(base, PATH_MAX);
++
++    /* Need: blen + '/' + nlen + '\0' */
++    if (blen + 1 + nlen + 1 > bufsz) {
++        errno = ENAMETOOLONG;
++        return -1;
++    }
++
++    /* Assemble path with stpncpy — no printf overhead. */
++    char *p  = stpncpy(buf,  base, blen);
++    *p++     = '/';
++    p        = stpncpy(p, name, nlen);
++    *p       = '\0';
++
++    return 0;
++}
++
++/* ------------------------------------------------------------------ */
++/* shm_open(3) emulation                                                */
++/* ------------------------------------------------------------------ */
++
++/*
++ * Pass O_CLOEXEC straight into open(2) — present on every Android API
++ * level we care about (API 9+, Linux ≥ 2.6.23) — so no fcntl round-trip.
++ * POSIX shm_open is specified to always return a close-on-exec descriptor.
++ */
++_ASHM int
++shm_open(const char *name, int oflag, mode_t mode)
++{
++    char path[PATH_MAX];
++    if (ashm_path(name, path, sizeof(path)) != 0)
++        return -1;
++
++    return open(path, oflag | O_CLOEXEC, mode);
++}
++
++/* ------------------------------------------------------------------ */
++/* shm_unlink(3) emulation                                              */
++/* ------------------------------------------------------------------ */
++
++_ASHM int
++shm_unlink(const char *name)
++{
++    char path[PATH_MAX];
++    if (ashm_path(name, path, sizeof(path)) != 0)
++        return -1;
++
++    return unlink(path);
++}
++
++#undef _ASHM
++#endif /* __ANDROID__ */
++
+ /*[clinic input]
+ module _posixshmem
+ [clinic start generated code]*/
+diff --git a/configure.ac b/configure.ac
+index d81c76f..83e7c9e 100644
 --- a/configure.ac
 +++ b/configure.ac
 @@ -5218,10 +5218,6 @@ if test "$ac_sys_system" = "Linux-android"; then
    blocked_funcs="chroot initgroups setegid seteuid setgid sethostname
      setregid setresgid setresuid setreuid setuid"
-
+ 
 -  # These functions are unimplemented and always return an error
 -  # (https://android.googlesource.com/platform/system/sepolicy/+/refs/heads/android13-release/public/domain.te#1044)
 -  blocked_funcs="$blocked_funcs sem_open sem_unlink"
@@ -36,146 +227,3 @@ Three changes are bundled here:
    # Before API level 23, when fchmodat is called with the unimplemented flag
    # AT_SYMLINK_NOFOLLOW, instead of returning ENOTSUP as it should, it actually
    # follows the symlink.
---- a/Lib/multiprocessing/heap.py
-+++ b/Lib/multiprocessing/heap.py
-@@ -70,7 +70,9 @@
-         """
-
-         if sys.platform == 'linux':
--            _dir_candidates = ['/dev/shm']
-+            import platform
-+            # Android does not have /dev/shm; fall back to temp directory
-+            _dir_candidates = [] if platform.system() == 'Linux' and 'android' in platform.release().lower() else ['/dev/shm']
-         else:
-             _dir_candidates = []
-
---- a/Modules/_multiprocessing/posixshmem.c
-+++ b/Modules/_multiprocessing/posixshmem.c
-@@ -15,6 +15,126 @@
- #ifdef HAVE_SYS_MMAN_H
- #  include <sys/mman.h>           // shm_open(), shm_unlink()
- #endif
-
-+#ifdef __ANDROID__
-+#include <fcntl.h>
-+#include <stdlib.h>
-+#include <string.h>
-+#include <unistd.h>
-+#include <errno.h>
-+#include <sys/stat.h>
-+#include <limits.h>
-+#include <pthread.h>
-+
-+/*
-+ * Android does not expose a working /dev/shm or POSIX shm_open(3).
-+ * When running under Termux, we emulate shm_open/shm_unlink by storing
-+ * shared-memory backing files under $TERMUX_PREFIX/tmp (which maps to
-+ * /data/data/com.termux/files/usr/tmp by default).
-+ *
-+ * @TERMUX_PREFIX@ is substituted at build time by Termux's configure
-+ * wrapper.  If it has not been substituted (stand-alone Android build),
-+ * we fall back to $TMPDIR and then to /data/local/tmp.
-+ */
-+
-+/* Resolve the runtime base directory exactly once. */
-+static const char *get_shm_base_dir(void)
-+{
-+    /* Prefer the compile-time Termux prefix when it has been substituted. */
-+    static const char compiled_prefix[] = "@TERMUX_PREFIX@/tmp";
-+
-+    /* If @TERMUX_PREFIX@ was never substituted the literal '@' remains. */
-+    if (compiled_prefix[0] != '@')
-+        return compiled_prefix;
-+
-+    /* Fall back: honour $TMPDIR at runtime (set by Termux even without
-+     * a compiled prefix), then a last-resort Android writable path. */
-+    const char *tmpdir = getenv("TMPDIR");
-+    if (tmpdir && tmpdir[0] != '\0')
-+        return tmpdir;
-+
-+    return "/data/local/tmp";
-+}
-+
-+/* Ensure the backing directory exists.  Called via pthread_once so it is
-+ * both thread-safe and executed at most once per process lifetime. */
-+static pthread_once_t shm_dir_once = PTHREAD_ONCE_INIT;
-+
-+static void ensure_tmp_dir_impl(void)
-+{
-+    const char *base = get_shm_base_dir();
-+    /* Ignore EEXIST; any other error will surface later via open(2). */
-+    (void)mkdir(base, 0700);
-+}
-+
-+static void ensure_tmp_dir(void)
-+{
-+    (void)pthread_once(&shm_dir_once, ensure_tmp_dir_impl);
-+}
-+
-+/* Build the full filesystem path for a POSIX shm name.
-+ * Returns 0 on success, -1 with errno set on failure. */
-+static int construct_shm_path(const char *name, char *buf, size_t bufsize)
-+{
-+    /* POSIX requires names to begin with '/'; skip all leading slashes. */
-+    while (*name == '/')
-+        ++name;
-+
-+    if (*name == '\0') {
-+        errno = EINVAL;
-+        return -1;
-+    }
-+
-+    /* Reject names that contain a slash after the leading one(s): POSIX
-+     * shm names are flat, not hierarchical. */
-+    if (strchr(name, '/') != NULL) {
-+        errno = EINVAL;
-+        return -1;
-+    }
-+
-+    int n = snprintf(buf, bufsize, "%s/%s", get_shm_base_dir(), name);
-+    if (n < 0 || (size_t)n >= bufsize) {
-+        errno = ENAMETOOLONG;
-+        return -1;
-+    }
-+
-+    return 0;
-+}
-+
-+static int shm_open(const char *name, int oflag, mode_t mode)
-+{
-+    char fname[PATH_MAX];
-+    if (construct_shm_path(name, fname, sizeof(fname)) != 0)
-+        return -1;
-+
-+    ensure_tmp_dir();
-+
-+    int fd = open(fname, oflag, mode);
-+    if (fd == -1)
-+        return -1;
-+
-+    /* Always set FD_CLOEXEC so the fd is not inherited across exec(2). */
-+    int fdflags = fcntl(fd, F_GETFD);
-+    if (fdflags == -1 || fcntl(fd, F_SETFD, fdflags | FD_CLOEXEC) == -1) {
-+        int saved_errno = errno;
-+        close(fd);
-+        errno = saved_errno;
-+        return -1;
-+    }
-+
-+    return fd;
-+}
-+
-+static int shm_unlink(const char *name)
-+{
-+    char fname[PATH_MAX];
-+    if (construct_shm_path(name, fname, sizeof(fname)) != 0)
-+        return -1;
-+
-+    return unlink(fname);
-+}
-+
-+#endif /* __ANDROID__ */
-+
- /*[clinic input]
-  module _posixshmem
-  [clinic start generated code]*/

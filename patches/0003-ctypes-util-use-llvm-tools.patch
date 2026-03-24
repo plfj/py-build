@@ -1,6 +1,8 @@
+diff --git a/Lib/ctypes/util.py b/Lib/ctypes/util.py
+index 378f121..916805c 100644
 --- a/Lib/ctypes/util.py
 +++ b/Lib/ctypes/util.py
-@@ -284,7 +284,7 @@
+@@ -278,7 +278,7 @@ def _get_soname(f):
              # assuming GNU binutils / ELF
              if not f:
                  return None
@@ -9,9 +11,9 @@
              if not objdump:
                  # objdump is not available, give up
                  return None
-@@ -321,7 +321,7 @@
+@@ -315,7 +315,7 @@ def find_library(name):
              expr = os.fsencode(expr)
-
+ 
              try:
 -                proc = subprocess.Popen(('/sbin/ldconfig', '-r'),
 +                proc = subprocess.Popen(('@TERMUX_PREFIX@/bin/ldconfig', '-r'),

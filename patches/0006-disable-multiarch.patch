@@ -1,8 +1,8 @@
 diff --git a/configure.ac b/configure.ac
-index 597a44b331a..fa78e09c192 100644
+index 83e7c9e..c5e6c0a 100644
 --- a/configure.ac
 +++ b/configure.ac
-@@ -1163,6 +1163,7 @@ dnl architecture. PLATFORM_TRIPLET will be a pair or single value for these
+@@ -1170,6 +1170,7 @@ dnl architecture. PLATFORM_TRIPLET will be a pair or single value for these
  dnl platforms.
  AC_MSG_CHECKING([for multiarch])
  AS_CASE([$ac_sys_system],

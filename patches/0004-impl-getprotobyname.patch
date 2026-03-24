@@ -1,23 +1,22 @@
+
+diff --git a/Modules/socketmodule.c b/Modules/socketmodule.c
+index 8c8a5ef..55f5dd0 100644
 --- a/Modules/socketmodule.c
 +++ b/Modules/socketmodule.c
-@@ -6412,17 +6412,74 @@
-    This only returns the protocol number, since the other info is
-    already known or not useful (like the list of aliases). */
-
-+#ifdef __ANDROID__
-+struct protocol_name_and_number {
-+    char* name;
-+    int number;
-+};
-+#endif
-+
- /*ARGSUSED*/
- static PyObject *
- socket_getprotobyname(PyObject *self, PyObject *args)
+@@ -6416,15 +6416,71 @@ socket_getprotobyname(PyObject *self, PyObject *args)
  {
+     const char *name;
+     struct protoent *sp;
++
+     if (!PyArg_ParseTuple(args, "s:getprotobyname", &name))
+         return NULL;
++
 +#ifdef __ANDROID__
 +    /* http://git.musl-libc.org/cgit/musl/tree/src/network/proto.c */
-+    static const struct protocol_name_and_number protocols[] = {
++    static const struct protocol_name_and_number {
++        char* name;
++        int number;
++    } protocols[] = {
 +       {"ip", 0},
 +       {"icmp", 1},
 +       {"igmp", 2},
@@ -55,12 +54,7 @@
 +       {"raw", 255}
 +    };
 +    int i;
-+#endif
-     const char *name;
-     struct protoent *sp;
-     if (!PyArg_ParseTuple(args, "s:getprotobyname", &name))
-         return NULL;
-+#ifdef __ANDROID__
++
 +    for (i = 0; i < sizeof(protocols) / sizeof(protocols[0]); i++) {
 +        if (strcmp(protocols[i].name, name) == 0) {
 +            return PyLong_FromLong((long) protocols[i].number);
@@ -72,6 +66,12 @@
      sp = getprotobyname(name);
      Py_END_ALLOW_THREADS
 +#endif
++
      if (sp == NULL) {
          PyErr_SetString(PyExc_OSError, "protocol not found");
          return NULL;
+     }
++
+     return PyLong_FromLong((long) sp->p_proto);
+ }
+ 
