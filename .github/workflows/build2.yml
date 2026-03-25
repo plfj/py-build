@@ -235,8 +235,8 @@ jobs:
           export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/frt/python-${PYTHON_VERSION}-patched-src.tar.xz"
           echo "PATCHED_SOURCE_URL=${PATCHED_SOURCE_URL}"
           mkdir -p dist
-          chmod +x build-pkg.sh
-          ./build-pkg.sh
+          chmod +x build.sh
+          ./build.sh
 
       - name: Show build output
         if: always()
