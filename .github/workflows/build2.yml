@@ -27,7 +27,7 @@ jobs:
     container:
       # Official CPython autoconf image — contains autoconf >= 2.71 as required
       # by Python 3.14's configure.ac.
-      image: ghcr.io/python/autoconf:2024.10.16.11360930377
+      image: ghcr.io/python/autoconf:2025.01.20.12869229720
 
     outputs:
       release_tag: ${{ steps.release_tag.outputs.tag }}
