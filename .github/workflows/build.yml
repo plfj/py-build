@@ -64,7 +64,7 @@ jobs:
           brew uninstall gcc || true
           echo "✅ macOS build dependencies installed."
       - name: Set up Android SDK + NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android NDK
         run: |

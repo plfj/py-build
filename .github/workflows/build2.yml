@@ -151,7 +151,7 @@ jobs:
           echo "Host Python OK"
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install Android NDK ${{ env.ANDROID_NDK_VERSION }}
         run: |
