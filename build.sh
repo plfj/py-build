@@ -1031,6 +1031,8 @@ main() {
         _warn "Keeping test trees (--keep-tests)."
     fi
 
+    find "${TERMUX_PREFIX}/bin" -type f -empty -delete
+
     shopt -s nullglob
     local -a sp_files=("${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/site-packages/"*)
     shopt -u nullglob
