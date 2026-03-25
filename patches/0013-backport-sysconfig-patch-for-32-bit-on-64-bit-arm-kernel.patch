@@ -1,18 +1,14 @@
 diff --git a/Lib/sysconfig/__init__.py b/Lib/sysconfig/__init__.py
-index 2ecbff2..df15bd3 100644
+index df15bd3..03c1a0d 100644
 --- a/Lib/sysconfig/__init__.py
 +++ b/Lib/sysconfig/__init__.py
-@@ -703,6 +703,12 @@ def get_platform():
-             release = get_config_var("ANDROID_API_LEVEL")
-
-             # Wheel tags use the ABI names from Android's own tools.
-+            # When Python is running on 32-bit ARM Android on a 64-bit ARM kernel,
-+            # 'os.uname().machine' is 'armv8l'. Such devices run the same userspace
-+            # code as 'armv7l' devices.
-             machine = {
-                 "x86_64": "x86_64",
-                 "i686": "x86",
-                 "aarch64": "arm64_v8a",
-                 "armv7l": "armeabi_v7a",
-+                "armv8l": "armeabi_v7a",
-             }[machine]
+@@ -698,6 +698,9 @@ def get_platform():
+         release = get_config_var("ANDROID_API_LEVEL")
+ 
+         # Wheel tags use the ABI names from Android's own tools.
++        # When Python is running on 32-bit ARM Android on a 64-bit ARM kernel,
++        # 'os.uname().machine' is 'armv8l'. Such devices run the same userspace
++        # code as 'armv7l' devices.
+         machine = {
+             "x86_64": "x86_64",
+             "i686": "x86",
