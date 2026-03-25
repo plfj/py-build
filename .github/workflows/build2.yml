@@ -232,7 +232,7 @@ jobs:
             echo "ERROR: RELEASE_TAG is empty — prepare-source did not expose release_tag."
             exit 1
           fi
-          export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/frt/python-${PYTHON_VERSION}-patched-src.tar.xz"
+          export PATCHED_SOURCE_URL="https://github.com/${{ github.repository }}/releases/download/frt14/python-${PYTHON_VERSION}-patched-src.tar.xz"
           echo "PATCHED_SOURCE_URL=${PATCHED_SOURCE_URL}"
           mkdir -p dist
           chmod +x build.sh
