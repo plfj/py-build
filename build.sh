@@ -15,6 +15,8 @@
 #       --skip-verify  Skip post-install module verification
 #       --no-deb       Build and install only; skip .deb packaging
 #       --keep-tests   Do not strip test directories from the install tree
+#       --lto          Enable Thin LTO (clang + lld; cross-compile safe)
+#       --pgo          Enable PGO (on-device builds only; skipped when cross-compiling)
 #
 # Environment variables (all auto-detected when not set):
 #   PATCHED_SOURCE_URL          URL to python-*-patched-src.tar.xz  [required]
@@ -57,6 +59,15 @@
 #
 #   # Explicit CPU count (normally auto-detected):
 #   CPU_COUNT=8 bash build.sh
+#
+#   # Thin LTO only (cross-compile safe, ~15-25% faster runtime):
+#   bash build.sh --lto
+#
+#   # PGO only (on-device Termux only; silently skipped when cross-compiling):
+#   bash build.sh --pgo
+#
+#   # LTO + PGO (on-device: both active; CI cross-compile: LTO only):
+#   bash build.sh --lto --pgo
 # =============================================================================
 set -euxo pipefail
 
@@ -92,6 +103,8 @@ _OPT_CLEAN=false
 _OPT_SKIP_VERIFY=false
 _OPT_NO_DEB=false
 _OPT_KEEP_TESTS=false
+_OPT_LTO=false
+_OPT_PGO=false
 
 # =============================================================================
 # §3  LOGGING
@@ -125,6 +138,8 @@ _parse_args() {
             --skip-verify)  _OPT_SKIP_VERIFY=true ;;
             --no-deb)       _OPT_NO_DEB=true ;;
             --keep-tests)   _OPT_KEEP_TESTS=true ;;
+            --lto)          _OPT_LTO=true ;;
+            --pgo)          _OPT_PGO=true ;;
             *) _die "Unknown option: '$1'  (try --help)" ;;
         esac
         shift
@@ -504,7 +519,6 @@ _setup_flags() {
     # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
     CONF_FLAGS+=" --without-ensurepip"
     CONF_FLAGS+=" --enable-loadable-sqlite-extensions"
-
 
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -996,6 +1010,7 @@ _build_deps() {
     else
         _info "ncurses already present — skipping."
     fi
+
     # ── Point Python build at the cross-built deps ────────────────────────────
     # Override PKG_CONFIG to see ONLY the cross-built packages, not host packages.
     CPPFLAGS+=" -I${CROSS_DEPS_PREFIX}/include"
@@ -1015,6 +1030,99 @@ _build_deps() {
     export CONF_FLAGS
     _ok "All cross-compiled dependencies ready at ${CROSS_DEPS_PREFIX}."
     return 0
+}
+
+# =============================================================================
+# §11c  LTO / PGO FLAGS
+# =============================================================================
+# LTO (Link-Time Optimisation):
+#   --with-lto=thin uses LLVM ThinLTO, which parallelises the optimisation
+#   across TUs and is safe with NDK clang + lld on both CI (cross) and
+#   on-device builds.  Full --with-lto (fat LTO) is avoided: it serialises
+#   the link phase, can easily OOM a CI runner, and offers negligible extra
+#   gain for Python.
+#
+# PGO (Profile-Guided Optimisation):
+#   --enable-optimizations triggers CPython's three-phase PGO make target:
+#     1. build an instrumented interpreter
+#     2. run the built-in training workload (Lib/test/test_fstring.py etc.)
+#     3. rebuild with the collected profiles
+#   Phase 2 executes the freshly built Python binary on the build machine.
+#   This is impossible when cross-compiling (host ≠ target ABI), so PGO is
+#   silently skipped in that case and a clear warning is emitted.
+#
+# Combined effect (both flags):
+#   LTO and PGO compose cleanly in CPython's Makefile.  On an on-device build
+#   with both flags active, expect:
+#     • ~2-3× longer build time (dominated by the PGO training run)
+#     • ~15-25% faster startup
+#     • ~10-20% faster compute-heavy benchmarks
+_setup_lto_pgo() {
+    # ── LTO ──────────────────────────────────────────────────────────────────
+    if [[ "$_OPT_LTO" == "true" ]]; then
+        _info "LTO: thin LTO requested."
+
+        # --with-lto=thin accepted by CPython configure >= 3.12.
+        CONF_FLAGS+=" --with-lto=thin"
+
+        # lld is mandatory for thin LTO with clang: GNU ld does not support
+        # LLVM's ThinLTO bitcode format.  _setup_flags already adds -fuse-ld=lld
+        # but guard here in case it was stripped or overridden by the caller.
+        if [[ "$LDFLAGS" != *-fuse-ld=lld* ]]; then
+            LDFLAGS+=" -fuse-ld=lld"
+            _info "LTO: added -fuse-ld=lld to LDFLAGS."
+        fi
+
+        # Clang emits ThinLTO bitcode into .o files; the linker (lld) reads the
+        # LLVM plugin to perform the cross-TU optimisation pass.  On NDK >= r23
+        # the plugin lives under toolchains/llvm/prebuilt/*/lib/libLTO.* or
+        # LLVMgold.so.  Adding its directory to LDFLAGS makes lld find it even
+        # when the NDK prebuilt path is not on the default library search path.
+        if [[ -n "${ANDROID_NDK_HOME:-}" ]]; then
+            local _llvm_lib
+            _llvm_lib="$(find "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt" \
+                              -name 'libLTO.*' -maxdepth 4 2>/dev/null \
+                         | head -1 | xargs -r dirname 2>/dev/null || true)"
+            if [[ -n "$_llvm_lib" ]]; then
+                LDFLAGS+=" -L${_llvm_lib}"
+                _info "LTO: LLVM plugin lib dir: ${_llvm_lib}"
+            else
+                _warn "LTO: libLTO.* not found under ANDROID_NDK_HOME — plugin path not added."
+                _warn "     This is harmless if lld can locate the plugin on its own."
+            fi
+        fi
+
+        export LDFLAGS CONF_FLAGS
+        _ok "LTO: --with-lto=thin enabled."
+    else
+        _info "LTO: not requested (pass --lto to enable)."
+    fi
+
+    # ── PGO ──────────────────────────────────────────────────────────────────
+    if [[ "$_OPT_PGO" == "true" ]]; then
+        if _is_cross_compiling; then
+            # Cross-compile: the instrumented Python binary targets Android ELF
+            # and cannot be executed on the macOS / Linux build host.  CPython's
+            # configure + Makefile do not support a remote-execution PGO workflow,
+            # so we skip PGO entirely rather than silently producing an
+            # un-profiled build that consumed extra time.
+            _warn "PGO requested but cross-compile detected — PGO skipped."
+            _warn "  The instrumented binary is Android ELF; it cannot run on the"
+            _warn "  build host.  Re-run inside Termux on the device itself, or set"
+            _warn "  TERMUX_ON_DEVICE_BUILD=true for a native build."
+        else
+            # On-device build: the host IS the Android target, so we can execute
+            # the instrumented interpreter for the training run.
+            CONF_FLAGS+=" --enable-optimizations"
+            export CONF_FLAGS
+            _ok "PGO: --enable-optimizations enabled."
+            _warn "PGO: build time will be roughly 3× longer than a standard build."
+            _warn "     The training run exercises the interpreter with the built-in"
+            _warn "     CPython benchmark suite — this is expected and normal."
+        fi
+    else
+        _info "PGO: not requested (pass --pgo to enable; on-device builds only)."
+    fi
 }
 
 # =============================================================================
@@ -1343,28 +1451,30 @@ main() {
     printf "  %-20s %s\n" "On-device:"    "${TERMUX_ON_DEVICE_BUILD}"
     printf "  %-20s %s\n" "CPU_COUNT:"    "${CPU_COUNT}"
     printf "  %-20s %s\n" "Make jobs:"    "${TERMUX_PKG_MAKE_PROCESSES}"
+    printf "  %-20s %s\n" "LTO:"          "${_OPT_LTO}"
+    printf "  %-20s %s\n" "PGO:"          "${_OPT_PGO}"
     printf "  %-20s %s\n" "No-deb:"       "${_OPT_NO_DEB}"
     printf "  %-20s %s\n" "Keep-tests:"   "${_OPT_KEEP_TESTS}"
     printf "  %-20s %s\n" "Skip-verify:"  "${_OPT_SKIP_VERIFY}"
     printf "  %-20s %s\n" "Source URL:"   "${PATCHED_SOURCE_URL}"
     echo
 
-    _section "Step 1/11 — Tool Check"
+    _section "Step 1/12 — Tool Check"
     _check_tools
 
     if [[ "$_OPT_CLEAN" == "true" ]]; then
-        _section "Step 2/11 — Clean"
+        _section "Step 2/12 — Clean"
         rm -rf "$TERMUX_PKG_SRCDIR" "$TERMUX_PKG_BUILDDIR"
         _ok "Clean complete."
     else
-        _info "Step 2/11 — Clean skipped (pass --clean to wipe build dirs)."
+        _info "Step 2/12 — Clean skipped (pass --clean to wipe build dirs)."
     fi
 
-    _section "Step 3/11 — Download Patched Source"
+    _section "Step 3/12 — Download Patched Source"
     mkdir -p "$TERMUX_PKG_CACHEDIR" "$TERMUX_PKG_SRCDIR"
     _download "${PATCHED_SOURCE_URL}" "${TERMUX_PKG_CACHEDIR}/${_PATCHED_TARBALL}"
 
-    _section "Step 4/11 — Unpack Patched Source"
+    _section "Step 4/12 — Unpack Patched Source"
     _info "Unpacking ${_PATCHED_TARBALL} ..."
     rm -rf "$TERMUX_PKG_SRCDIR"
     mkdir -p "$TERMUX_PKG_SRCDIR"
@@ -1373,19 +1483,22 @@ main() {
         || _die "Failed to unpack patched source tarball."
     _ok "Patched source unpacked."
 
-    _section "Step 4b/11 — Patch _pyrepl for Android compatibility"
+    _section "Step 4b/12 — Patch _pyrepl for Android compatibility"
     _patch_pyrepl
 
-    _section "Step 5/11 — Setup Compiler Flags"
+    _section "Step 5/12 — Setup Compiler Flags"
     _setup_flags
 
-    _section "Step 6/11 — Cross-Compile Dependencies"
+    _section "Step 5b/12 — LTO / PGO Setup"
+    _setup_lto_pgo
+
+    _section "Step 6/12 — Cross-Compile Dependencies"
     _build_deps
 
-    _section "Step 7/11 — Configure"
+    _section "Step 7/12 — Configure"
     _do_configure
 
-    _section "Step 8/11 — Build"
+    _section "Step 8/12 — Build"
     _info "make -j${TERMUX_PKG_MAKE_PROCESSES} ..."
     cd "$TERMUX_PKG_BUILDDIR"
     # Pass CPPFLAGS and LDFLAGS explicitly to make.
@@ -1401,15 +1514,15 @@ main() {
         || _die "make failed."
     _ok "Build complete."
 
-    _section "Step 9/11 — Install"
+    _section "Step 9/12 — Install"
     make install || _die "make install failed."
     _ok "Install complete."
 
-    _section "Step 10/11 — Post-Install + Module Verification"
+    _section "Step 10/12 — Post-Install + Module Verification"
     _post_install
     _verify_modules
 
-    _section "Step 11/11 — Package"
+    _section "Step 11/12 — Package"
     if [[ "$_OPT_KEEP_TESTS" != "true" ]]; then
         _info "Removing test trees ..."
         rm -rf \
@@ -1432,12 +1545,15 @@ main() {
         return
     fi
 
+    _section "Step 12/12 — Create .deb"
     local debfile
     debfile="$(_create_deb)"
 
     _section "Build Successful"
     printf "  Python %s installed to : %s\n"   "${TERMUX_PKG_VERSION}" "${TERMUX_PREFIX}"
-    printf "  .deb package           : %s\n\n" "${debfile}"
+    printf "  .deb package           : %s\n"   "${debfile}"
+    printf "  LTO                    : %s\n"   "${_OPT_LTO}"
+    printf "  PGO                    : %s\n\n" "${_OPT_PGO}"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
