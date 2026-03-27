@@ -1097,8 +1097,8 @@ _build_deps() {
 
     # ── libuuid — extracted from Termux .deb ─────────────────────────────────
     # Python's _uuid module needs uuid/uuid.h and libuuid.
-    if [[ ! -f "${CROSS_DEPS_PREFIX}/include/uuid/uuid.h" ]] || \
-       [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libuuid.so"       ]]; then
+    if [[ ! -f "${CROSS_DEPS_PREFIX}/include/uuid.h" ]] || \
+       [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libuuid.so"  ]]; then
         _info "Extracting libuuid ${_LIBUUID_VERSION} from Termux .deb ..."
         local _uuid_arch="${TERMUX_HOST_PLATFORM%%-*}"
         local uuid_deb="${TERMUX_PKG_CACHEDIR}/libuuid.deb"
@@ -1129,8 +1129,13 @@ _build_deps() {
 
         install -d "${CROSS_DEPS_PREFIX}/include/uuid" "${CROSS_DEPS_PREFIX}/lib"
 
-        [[ -f "${uuid_usr}/include/uuid/uuid.h" ]] && \
+        if [[ -f "${uuid_usr}/include/uuid/uuid.h" ]]; then
             cp -a "${uuid_usr}/include/uuid/uuid.h" "${CROSS_DEPS_PREFIX}/include/uuid/"
+            # _uuidmodule.c uses #include <uuid.h> (flat form); also install
+            # at the top-level so both #include <uuid.h> and #include <uuid/uuid.h>
+            # resolve without needing extra -I flags.
+            cp -a "${uuid_usr}/include/uuid/uuid.h" "${CROSS_DEPS_PREFIX}/include/"
+        fi
 
         local _uuid_found=0
         for f in "${uuid_usr}/lib"/libuuid*.so*; do
@@ -1168,9 +1173,10 @@ _build_deps() {
     export READLINE_CFLAGS="-I${CROSS_DEPS_PREFIX}/include"
     export READLINE_LIBS="-lreadline -lncursesw"
 
-    # _uuid: uuid.h is at CROSS_DEPS_PREFIX/include/uuid/uuid.h;
-    # CPPFLAGS already includes CROSS_DEPS_PREFIX/include so uuid/uuid.h resolves.
-    export LIBUUID_CFLAGS="-I${CROSS_DEPS_PREFIX}/include"
+    # _uuid: uuid.h is installed at CROSS_DEPS_PREFIX/include/uuid.h (flat) so
+    # CPPFLAGS (-I${CROSS_DEPS_PREFIX}/include) already covers it.
+    # LIBUUID_CFLAGS is left empty to avoid a redundant -I.
+    export LIBUUID_CFLAGS=""
     export LIBUUID_LIBS="-luuid"
 
     _ok "All cross-compiled dependencies ready at ${CROSS_DEPS_PREFIX}."
