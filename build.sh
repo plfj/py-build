@@ -85,7 +85,7 @@ readonly TERMUX_PKG_DESCRIPTION="Python 3 programming language intended to enabl
 readonly TERMUX_PKG_LICENSE="custom"
 readonly TERMUX_PKG_MAINTAINER="Yaksh Bariya <thunder-coding@termux.dev>"
 readonly TERMUX_PKG_VERSION="3.13.12"
-readonly TERMUX_PKG_REVISION=3
+readonly TERMUX_PKG_REVISION=4
 readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"
 
 # Name of the patched-source tarball (must match prepare-source.sh)
