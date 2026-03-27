@@ -539,15 +539,13 @@ _setup_flags() {
     CONF_FLAGS+=" --with-system-ffi"
     # --with-system-expat omitted: NDK sysroot has no expat headers; use bundled.
     CONF_FLAGS+=" --without-ensurepip"
-    # --enable-loadable-sqlite-extensions was removed in Python 3.13.
-    # Loadable-extension support is now determined entirely by whether the sqlite3
-    # library was compiled with SQLITE_ENABLE_LOAD_EXTENSION=1 (which we do in
-    # _build_deps).  Passing the old flag produces "unrecognized option" warnings.
     # Modules that require Tk/Tcl or GNU dbm are not available in the NDK sysroot
     # and cannot be cross-compiled; disable them explicitly so configure does not
     # waste time searching and so the "missing modules" summary is clean.
+    # --with-dbmliborder= (empty) disables all dbm backends (gdbm, ndbm, bdb).
+    # --without-dbmliborder is not a valid flag; the option only accepts --with-*.
     CONF_FLAGS+=" --without-tkinter"
-    CONF_FLAGS+=" --without-dbmliborder"   # disables dbm, gdbm, ndbm entirely
+    CONF_FLAGS+=" --with-dbmliborder="
 
     # ── API-level-gated cache vars ────────────────────────────────────────────
     if (( TERMUX_PKG_API_LEVEL < 28 )); then
@@ -657,6 +655,7 @@ _BEEWARE_ZSTD_SLUG="zstd-1.5.7-0"
 _READLINE_VERSION="8.3.1-2"
 _READLINE_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/r/readline"
 # libuuid: extracted from Termux util-linux .deb split.
+# Package name: libuuid_VERSION_ARCH.deb
 # To update: browse https://packages.termux.dev/apt/termux-main/pool/main/libu/libuuid/
 _LIBUUID_VERSION="2.41.3"
 _LIBUUID_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/libu/libuuid"
@@ -1237,12 +1236,7 @@ _do_configure() {
     _info "  CFLAGS:  ${CFLAGS:-<unset>}"
     _info "  LDFLAGS: ${LDFLAGS:-<unset>}"
 
-    # Resolve --with-system-ffi: the flag name changed in Python 3.13.
-    # In 3.13+ the option is simply gone from configure — libffi is always
-    # sought via pkg-config / CPPFLAGS / LDFLAGS when present.  Passing the
-    # old flag produces "unrecognized option" warnings that pollute the log
-    # and, on strict setups, cause confusion.  We probe configure --help and
-    # only pass the flag when it is actually accepted.
+    # Probe --with-system-ffi: removed in Python 3.13; pass only when accepted.
     local _ffi_flag=""
     if "${TERMUX_PKG_SRCDIR}/configure" --help 2>/dev/null | grep -q -- '--with-system-ffi'; then
         _ffi_flag="--with-system-ffi"
@@ -1250,20 +1244,34 @@ _do_configure() {
     else
         _info "configure: --with-system-ffi not recognized (Python 3.13+) — omitting."
         _info "  libffi will be located via PKG_CONFIG_PATH / CPPFLAGS / LDFLAGS."
-        # Strip any occurrence already in CONF_FLAGS (added by _setup_flags).
         CONF_FLAGS="${CONF_FLAGS/--with-system-ffi/}"
         export CONF_FLAGS
     fi
 
+    # Probe --enable-loadable-sqlite-extensions: present in Python <= 3.12,
+    # removed in 3.13 where the feature is gated solely by the sqlite3 library
+    # having SQLITE_ENABLE_LOAD_EXTENSION=1 (which the BeeWare build provides).
+    # Pass it when configure accepts it so the 'checking for
+    # --enable-loadable-sqlite-extensions... no' line doesn't appear.
+    local _sqlite_ext_flag=""
+    if "${TERMUX_PKG_SRCDIR}/configure" --help 2>/dev/null | grep -q -- '--enable-loadable-sqlite-extensions'; then
+        _sqlite_ext_flag="--enable-loadable-sqlite-extensions"
+        _info "configure: --enable-loadable-sqlite-extensions accepted — passing it."
+    else
+        _info "configure: --enable-loadable-sqlite-extensions not recognized — omitting."
+        _info "  Loadable extensions enabled via SQLITE_ENABLE_LOAD_EXTENSION=1 in the library."
+    fi
+
     # shellcheck disable=SC2086
     "${TERMUX_PKG_SRCDIR}/configure" \
-        --prefix="${TERMUX_PREFIX}"              \
-        --host="${TERMUX_HOST_PLATFORM}"         \
-        --build="${TERMUX_BUILD_TUPLE}"          \
-        --enable-shared                          \
-        ${_ffi_flag:+"$_ffi_flag"}               \
-        ${CONF_CACHE}                            \
-        ${CONF_FLAGS}                            \
+        --prefix="${TERMUX_PREFIX}"                        \
+        --host="${TERMUX_HOST_PLATFORM}"                   \
+        --build="${TERMUX_BUILD_TUPLE}"                    \
+        --enable-shared                                    \
+        ${_ffi_flag:+"$_ffi_flag"}                         \
+        ${_sqlite_ext_flag:+"$_sqlite_ext_flag"}           \
+        ${CONF_CACHE}                                      \
+        ${CONF_FLAGS}                                      \
         CC="${CC:-clang}"                        \
         CXX="${CXX:-clang++}"                    \
         AR="${AR:-llvm-ar}"                      \
