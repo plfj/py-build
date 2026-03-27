@@ -5,7 +5,7 @@ on:
   push:
     tags:
       - 'v*'
-    branches: [ master ]
+    branches: [ opt ]
 
 permissions:
   contents: write
@@ -268,7 +268,7 @@ jobs:
 
           mkdir -p dist
           chmod +x build.sh
-          ./build.sh
+          ./build.sh --pgo --lto
 
       # ── 10. Show artifacts ─────────────────────────────────────────────────────
       - name: Show build output
