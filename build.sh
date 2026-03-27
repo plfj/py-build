@@ -658,7 +658,7 @@ _READLINE_VERSION="8.3.1-2"
 _READLINE_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/r/readline"
 # libuuid: extracted from Termux util-linux .deb split.
 # To update: browse https://packages.termux.dev/apt/termux-main/pool/main/libu/libuuid/
-_LIBUUID_VERSION="2.40.4-1"
+_LIBUUID_VERSION="2.41.3"
 _LIBUUID_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/libu/libuuid"
 # Termux ncurses version to fetch. The arch is substituted at runtime.
 # To update: browse https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses/
