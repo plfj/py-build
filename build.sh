@@ -85,7 +85,7 @@ readonly TERMUX_PKG_DESCRIPTION="Python 3 programming language intended to enabl
 readonly TERMUX_PKG_LICENSE="custom"
 readonly TERMUX_PKG_MAINTAINER="Yaksh Bariya <thunder-coding@termux.dev>"
 readonly TERMUX_PKG_VERSION="3.13.12"
-readonly TERMUX_PKG_REVISION=4
+readonly TERMUX_PKG_REVISION=3
 readonly _MAJOR_VERSION="${TERMUX_PKG_VERSION%.*}"
 
 # Name of the patched-source tarball (must match prepare-source.sh)
@@ -1537,11 +1537,8 @@ EOF
     if command -v dpkg-deb &>/dev/null; then
         dpkg-deb --build "$debdir" "$debout"
     else
-        _warn "dpkg-deb not available; building .deb manually ..."
+        _warn "dpkg-deb not available; building .deb with Python ar writer ..."
         local tmp; tmp="$(mktemp -d)"
-        # Register cleanup immediately so partial builds don't leak the temp dir.
-        # trap EXIT fires even when _die is called; it does not conflict with
-        # set -u because $tmp is assigned before the trap is installed.
         trap 'rm -rf "${tmp:-}"' EXIT
 
         echo "2.0" > "${tmp}/debian-binary"
@@ -1554,25 +1551,73 @@ EOF
         xz -z -T0 "${tmp}/data.tar" \
             || _die "xz compression of data.tar failed."
 
-        # Prefer llvm-ar (already on PATH from the NDK toolchain) over the
-        # system ar, which may be BSD ar with subtly different flag syntax.
-        local _deb_ar
-        if command -v llvm-ar &>/dev/null; then
-            _deb_ar="llvm-ar"
-        elif command -v gar &>/dev/null; then
-            _deb_ar="gar"   # Homebrew gnu-ar on some macOS setups
-        else
-            _deb_ar="ar"
-        fi
+        # Write the .deb using Python's struct module to produce a byte-perfect
+        # POSIX ar archive.  dpkg requires:
+        #   1. Global header:  "!<arch>\n"  (8 bytes, no null terminator)
+        #   2. Members in order: debian-binary, control.tar.gz, data.tar.xz
+        #   3. Each member header is exactly 60 bytes (no extensions, no BSD
+        #      "//" strtab, no "__.SYMDEF" symbol table)
+        #   4. Member data padded to an even byte boundary with '\n'
+        #
+        # llvm-ar / BSD ar both write "__.SYMDEF" as the first member when the
+        # 's' flag is used, which dpkg rejects.  GNU ar's 'r' without 's'
+        # works but is not available on macOS.  Python is always present
+        # (it is the --with-build-python) so this is the most portable path.
+        local _host_py
+        _host_py="$(command -v "python${_MAJOR_VERSION}" || command -v python3)"
 
-        "${_deb_ar}" rcs "$debout" \
+        "$_host_py" - \
             "${tmp}/debian-binary" \
             "${tmp}/control.tar.gz" \
             "${tmp}/data.tar.xz" \
-            || _die "${_deb_ar}: failed assembling .deb."
+            "$debout" << 'PYEOF'
+import sys, os, struct, time
+
+def ar_header(name, size):
+    """
+    Return a 60-byte POSIX ar member header.
+    Field layout (all ASCII, space-padded, no null terminator):
+      name     16 bytes
+      mtime    12 bytes  (decimal seconds since epoch)
+      uid       6 bytes
+      gid       6 bytes
+      mode      8 bytes  (octal)
+      size     10 bytes  (decimal)
+      magic     2 bytes  "` + '`' + `\n"
+    """
+    ts = str(int(time.time())).encode()
+    hdr = (
+        name.encode().ljust(16)[:16] +
+        ts.ljust(12)[:12] +
+        b'0     ' +          # uid
+        b'0     ' +          # gid
+        b'100644  ' +        # mode
+        str(size).encode().ljust(10)[:10] +
+        b'\x60\n'            # ar magic
+    )
+    assert len(hdr) == 60, f"header length {len(hdr)} != 60"
+    return hdr
+
+members = sys.argv[1:4]   # debian-binary, control.tar.gz, data.tar.xz
+outpath = sys.argv[4]
+
+with open(outpath, 'wb') as out:
+    out.write(b'!<arch>\n')   # ar global magic header
+    for path in members:
+        name = os.path.basename(path)
+        data = open(path, 'rb').read()
+        size = len(data)
+        out.write(ar_header(name, size))
+        out.write(data)
+        if size % 2:          # POSIX: pad odd-length members to even boundary
+            out.write(b'\n')
+
+print(f"wrote {outpath} ({os.path.getsize(outpath)} bytes)")
+PYEOF
+        [[ $? -eq 0 ]] || _die "Python ar writer failed assembling .deb."
 
         rm -rf "$tmp"
-        trap - EXIT   # clear the trap once the temp dir is gone
+        trap - EXIT
     fi
 
     local size; size="$(du -sh "$debout" | cut -f1)"
