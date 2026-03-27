@@ -652,8 +652,9 @@ _BEEWARE_ZSTD_SLUG="zstd-1.5.7-0"
 
 # readline: extracted from Termux .deb. Requires libncursesw at link time,
 # which we already have.
+# Package name: readline_VERSION_ARCH.deb  (single package; ships .so + headers)
 # To update: browse https://packages.termux.dev/apt/termux-main/pool/main/r/readline/
-_READLINE_VERSION="8.2.13-1"
+_READLINE_VERSION="8.3.1-2"
 _READLINE_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/r/readline"
 # libuuid: extracted from Termux util-linux .deb split.
 # To update: browse https://packages.termux.dev/apt/termux-main/pool/main/libu/libuuid/
@@ -1034,43 +1035,37 @@ _build_deps() {
     # ── readline — extracted from Termux .deb ────────────────────────────────
     # Python's readline module links against libreadline, which in turn needs
     # libncursesw.  Both are already in CROSS_DEPS_PREFIX.
-    # We need: libreadline.so (runtime), libreadline.a (configure probe), readline.h
+    # Package: readline_VERSION_ARCH.deb  (single deb; ships .so + headers)
+    # URL pattern: BASE/readline_VERSION_ARCH.deb
     if [[ ! -f "${CROSS_DEPS_PREFIX}/include/readline/readline.h" ]] || \
        [[ ! -f "${CROSS_DEPS_PREFIX}/lib/libreadline.so"          ]]; then
         _info "Extracting readline ${_READLINE_VERSION} from Termux .deb ..."
+        # Arch suffix in Termux package filenames is the short form (aarch64,
+        # arm, i686, x86_64) — strip everything after the first '-' in the
+        # host triple to get it.
         local _rl_arch="${TERMUX_HOST_PLATFORM%%-*}"
         local rl_deb="${TERMUX_PKG_CACHEDIR}/readline.deb"
-        local rl_static_deb="${TERMUX_PKG_CACHEDIR}/readline-static.deb"
-        _download \
-            "${_READLINE_TERMUX_BASE_URL}/libreadline8_${_READLINE_VERSION}_${_rl_arch}.deb" \
-            "$rl_deb"
-        _download \
-            "${_READLINE_TERMUX_BASE_URL}/readline-runtime_${_READLINE_VERSION}_${_rl_arch}.deb" \
-            "$rl_static_deb" || \
         _download \
             "${_READLINE_TERMUX_BASE_URL}/readline_${_READLINE_VERSION}_${_rl_arch}.deb" \
-            "$rl_static_deb"
+            "$rl_deb"
 
         local rl_extract="${deps_build}/readline-deb"
         rm -rf "$rl_extract"; mkdir -p "$rl_extract"
-
-        for deb in "$rl_deb" "$rl_static_deb"; do
-            local deb_tmp="${rl_extract}/tmp_$(basename "$deb")"
-            mkdir -p "$deb_tmp"
-            (
-                cd "$deb_tmp"
-                ar x "$deb"
-                local data_tar
-                data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
-                [[ -n "$data_tar" ]] || _die "No data.tar.* in $(basename "$deb")"
-                case "$data_tar" in
-                    *.xz)  tar -xJf "$data_tar" -C "$rl_extract" ;;
-                    *.gz)  tar -xzf "$data_tar" -C "$rl_extract" ;;
-                    *.zst) zstd -d  "$data_tar" --stdout | tar -x -C "$rl_extract" ;;
-                    *)     _die "Unknown format: $data_tar" ;;
-                esac
-            )
-        done
+        local rl_tmp="${rl_extract}/tmp"
+        mkdir -p "$rl_tmp"
+        (
+            cd "$rl_tmp"
+            ar x "$rl_deb"
+            local data_tar
+            data_tar="$(ls data.tar.* 2>/dev/null | head -1)"
+            [[ -n "$data_tar" ]] || _die "No data.tar.* in readline.deb"
+            case "$data_tar" in
+                *.xz)  tar -xJf "$data_tar" -C "$rl_extract" ;;
+                *.gz)  tar -xzf "$data_tar" -C "$rl_extract" ;;
+                *.zst) zstd -d  "$data_tar" --stdout | tar -x -C "$rl_extract" ;;
+                *)     _die "Unknown format: $data_tar" ;;
+            esac
+        )
 
         local rl_usr="${rl_extract}/data/data/com.termux/files/usr"
         [[ -d "$rl_usr" ]] || _die "readline .deb extraction failed — tree not at ${rl_usr}"
