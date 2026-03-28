@@ -9,12 +9,13 @@
              if not objdump:
                  # objdump is not available, give up
                  return None
-@@ -209,7 +209,7 @@
+@@ -209,7 +209,8 @@
              expr = os.fsencode(expr)
  
              try:
++                PREFIX = os.environ.get("PREFIX") or os.environ.get("TERMUX_PREFIX") or "/data/data/com.termux/files/usr" or "/usr"
 -                proc = subprocess.Popen(('/sbin/ldconfig', '-r'),
-+                proc = subprocess.Popen(('@TERMUX_PREFIX@/bin/ldconfig', '-r'),
++                proc = subprocess.Popen((PREFIX + '/bin/ldconfig', '-r'),
                                          stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL)
              except OSError:  # E.g. command not found
