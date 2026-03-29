@@ -664,7 +664,7 @@ _LIBUUID_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/
 # and https://packages-cf.termux.dev/apt/termux-main/pool/main/n/ncurses-static/
 # Version string uses Termux's epoch+snapshot convention:
 #   6.6.20260124+really6.5.20250830
-_NCURSES_TERMUX_VERSION="6.6.20260124+really6.5.20250830"
+_NCURSES_TERMUX_VERSION="6.6.20260307"
 _NCURSES_TERMUX_BASE_URL="https://packages.termux.dev/apt/termux-main/pool/main/n"
 
 # URL-encode '+' as '%2B' for the ncurses version used in download URLs.
