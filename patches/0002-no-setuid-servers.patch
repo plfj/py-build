@@ -1,17 +1,21 @@
 --- a/Lib/http/server.py
 +++ b/Lib/http/server.py
-@@ -1201,11 +1201,15 @@
+@@ -1203,13 +1203,14 @@
+                 return
              # Child
              try:
 -                try:
 -                    os.setuid(nobody)
 -                except OSError:
 -                    pass
-+                if hasattr(os, "setuid"):
++                if hasattr(os, 'setuid'):
 +                    try:
 +                        os.setuid(nobody)
-+                    except (PermissionError, OSError):
++                    except OSError:
 +                        pass
                  os.dup2(self.rfile.fileno(), 0)
                  os.dup2(self.wfile.fileno(), 1)
                  os.execve(scriptfile, args, env)
+             except:
+                 self.server.handle_error(self.request, self.client_address)
+                 os._exit(127)
