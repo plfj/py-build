@@ -1307,13 +1307,6 @@ _do_configure() {
 # =============================================================================
 _post_install() {
     _info "Creating convenience symlinks ..."
-    (
-        cd "${TERMUX_PREFIX}/bin"
-        ln -sf "idle${_MAJOR_VERSION}"         idle          2>/dev/null || true
-        ln -sf "python${_MAJOR_VERSION}"        python        2>/dev/null || true
-        ln -sf "python${_MAJOR_VERSION}-config" python-config 2>/dev/null || true
-        ln -sf "pydoc${_MAJOR_VERSION}"         pydoc         2>/dev/null || true
-    )
     if [[ -d "${TERMUX_PREFIX}/share/man/man1" ]]; then
         ln -sf "python${_MAJOR_VERSION}.1" \
                "${TERMUX_PREFIX}/share/man/man1/python.1" 2>/dev/null || true
