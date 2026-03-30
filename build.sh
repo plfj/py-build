@@ -1312,8 +1312,7 @@ _post_install() {
                "${TERMUX_PREFIX}/share/man/man1/python.1" 2>/dev/null || true
     fi
 
-    rm -rf $TERMUX_PREFIX/lib/__pycache__
-    rm -rf $TERMUX_PREFIX/lib/*/__pycache__
+    find $TERMUX_PREFIX/lib/python3.13 -type d -name "__pycache__" -exec rm -rf {} +
     local debpython_src="${TERMUX_PKG_SRCDIR}/debpython/debpython"
     if [[ -d "$debpython_src" ]]; then
         local debpython_dst="${TERMUX_PREFIX}/lib/python${_MAJOR_VERSION}/debpython"
