@@ -207,7 +207,7 @@ jobs:
           name: deb-pyv${{ matrix.version }}
           path: pyv_${{ matrix.version }}_aarch64.deb
       - name: Create / Update GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: pyv__a
           name: pyv
